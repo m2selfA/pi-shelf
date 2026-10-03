@@ -90,3 +90,19 @@ test("hotkey seed keeps the typed word and skips a bare slash command", () => {
   assert.equal(shelfMatches([row], "rel").length, 1);
   assert.equal(shelfMatches([row], "@Paper").length, 0);
 });
+
+test("prompt files remain eligible for editor completion", () => {
+  const prompt: Row = {
+    id: "prompt-file:global:review",
+    category: "Prompt",
+    title: "review",
+    value: "Review {{focus}}.",
+    tags: ["pi-prompt"],
+    source: "manual",
+    uses: 0,
+    created: "",
+    updated: "",
+    dynamic: true,
+  };
+  assert.equal(shelfMatches([prompt], "review").length, 1);
+});

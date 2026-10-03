@@ -79,7 +79,6 @@ export function shelfMatches(rows: Row[], token: string, forced = false) {
   if (!forced && queryText.length < 2 && !queryText.startsWith("@") && !queryText.startsWith("#")) return [];
   const query = parseQuery(queryText);
   return rows
-    .filter((row) => !row.dynamic)
     .map((row) => ({ row, rank: score(row, query) }))
     .filter((hit) => hit.rank !== Infinity)
     .sort((a, b) => a.rank - b.rank || b.row.uses - a.row.uses || a.row.title.localeCompare(b.row.title))

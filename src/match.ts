@@ -64,6 +64,14 @@ export function draftSeed(text: string) {
   return token;
 }
 
+export function slashCommandToken(text: string) {
+  const token = text.match(/\S*$/)?.[0] ?? "";
+  if (!token.startsWith("/")) return "";
+  if (text.slice(0, text.length - token.length).trim() !== "") return "";
+  if (token.slice(1).includes("/") || token.slice(1).includes("\\")) return "";
+  return token;
+}
+
 export function isMachinePath(value: string) {
   const text = value.trim();
   if (text.includes("://")) return false;

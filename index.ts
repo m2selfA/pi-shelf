@@ -18,6 +18,7 @@ import {
   rankPath,
   score,
   shelfMatches,
+  slashCommandToken,
   type Item,
   type Row,
   type TopicDef,
@@ -937,11 +938,15 @@ function installAutocomplete(pi: ExtensionAPI) {
       triggerCharacters: [":", "@", "#"],
       async getSuggestions(lines, cursorLine, cursorCol, options) {
         const before = (lines[cursorLine] ?? "").slice(0, cursorCol);
+        if (slashCommandToken(before)) return current.getSuggestions(lines, cursorLine, cursorCol, options);
         const token = parseRemoteToken(before);
         if (token && hostAllowed(token.destination, known)) {
           try {
             const listing = await remoteListing(token.destination, token.listDir, options.signal);
-            const items = remoteItems(token, remoteEntries(listing, token.namePrefix));
+            const items = remoteItems(token, remoteEntries(listing, token.namePrefix)).map((item) => ({
+              ...item,
+              shelfKind: "remote" as const,
+            }));
             if (items.length) return { items, prefix: token.prefix };
           } catch {
             return null;
@@ -957,6 +962,7 @@ function installAutocomplete(pi: ExtensionAPI) {
                 value: hit.row.value,
                 label: hit.row.title,
                 description: `@${hit.row.category}${templateSlots(hit.row.value).length ? " 模板" : ""}`,
+                shelfKind: "shelf" as const,
               })),
               prefix: seed,
             };
@@ -965,10 +971,15 @@ function installAutocomplete(pi: ExtensionAPI) {
         return current.getSuggestions(lines, cursorLine, cursorCol, options);
       },
       applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
+        const marked = item as CompleteItem & { shelfKind?: string };
+        if (marked.shelfKind !== "shelf" && marked.shelfKind !== "remote") {
+          return current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
+        }
         return applyRemoteCompletion(lines, cursorLine, cursorCol, item.value, prefix, item.label.endsWith("/"));
       },
       shouldTriggerFileCompletion(lines, cursorLine, cursorCol) {
         const before = (lines[cursorLine] ?? "").slice(0, cursorCol);
+        if (slashCommandToken(before)) return current.shouldTriggerFileCompletion?.(lines, cursorLine, cursorCol) ?? false;
         const token = parseRemoteToken(before);
         if (token && hostAllowed(token.destination, known)) return true;
         if (!pathToken(before)) return true;

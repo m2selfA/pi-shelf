@@ -4,6 +4,8 @@ import {
   applyRemoteCompletion,
   hostAllowed,
   isAltSlash,
+  localPathItems,
+  parseLocalDrivePath,
   parseKnownHosts,
   parseRemoteToken,
   parseSshConfigHosts,
@@ -20,6 +22,24 @@ test("remote token parses ssh destinations and ignores urls and drive letters", 
   assert.equal(parseRemoteToken("see https://example.com/a"), null);
   assert.equal(parseRemoteToken("C:\\Users"), null);
   assert.equal(parseRemoteToken("user@cap00:")?.listDir, ".");
+});
+
+test("Windows drive prefixes parse and format local entries", () => {
+  const token = parseLocalDrivePath("E:/in");
+  assert.deepEqual(token, { prefix: "E:/in", directory: "E:/", namePrefix: "in" });
+  assert.equal(parseLocalDrivePath("cap00:/data"), null);
+  assert.deepEqual(
+    localPathItems(token!, [
+      { name: "README.md", dir: false },
+      { name: "inter", dir: true },
+      { name: "input", dir: true },
+      { name: "other", dir: true },
+    ]),
+    [
+      { value: "E:/input/", label: "input/" },
+      { value: "E:/inter/", label: "inter/" },
+    ],
+  );
 });
 
 test("only configured ssh hosts complete", () => {

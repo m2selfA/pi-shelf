@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { draftSeed, githubHits, harvestHits, isMachinePath, parseQuery, pathToken, rankPath, score, shelfMatches, slashCommandToken, type Item, type Row } from "../src/match.ts";
+import { addDirArgument, draftSeed, githubHits, harvestHits, isMachinePath, isPathLikeToken, parseQuery, pathToken, rankPath, score, shelfMatches, slashCommandToken, type Item, type Row } from "../src/match.ts";
 
 const relion: Row = {
   id: "1",
@@ -77,6 +77,11 @@ test("path token keeps a slash command and a partial directory", () => {
   assert.equal(slashCommandToken("/quit"), "/quit");
   assert.equal(slashCommandToken("/add-dir ./src"), "");
   assert.equal(slashCommandToken("note /quit"), "");
+  assert.equal(addDirArgument("/add-dir E:/in"), "E:/in");
+  assert.equal(addDirArgument("/add-dir "), "");
+  assert.equal(addDirArgument("/new E:/in"), null);
+  assert.equal(isPathLikeToken("E:/in"), true);
+  assert.equal(isPathLikeToken("rel"), false);
   assert.equal(rankPath("src/relion", "rel") < Infinity, true);
   assert.equal(rankPath("docs/readme", "rel"), Infinity);
 });

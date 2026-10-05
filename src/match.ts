@@ -72,6 +72,16 @@ export function slashCommandToken(text: string) {
   return token;
 }
 
+export function addDirArgument(text: string) {
+  const match = text.match(/^\s*\/add-dir(?:\s+(\S*))?\s*$/);
+  return match ? match[1] ?? "" : null;
+}
+
+export function isPathLikeToken(value: string) {
+  const token = value.trim();
+  return token === "" || token.startsWith(".") || token.startsWith("~") || token.startsWith("/") || token.startsWith("\\") || token.includes("/") || token.includes("\\");
+}
+
 export function isMachinePath(value: string) {
   const text = value.trim();
   if (text.includes("://")) return false;

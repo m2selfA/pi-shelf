@@ -1,3 +1,5 @@
+import { readdir } from "node:fs/promises";
+
 export type RemoteToken = {
   prefix: string;
   destination: string;
@@ -6,7 +8,44 @@ export type RemoteToken = {
   displayDir: string;
 };
 
+export type LocalPathToken = {
+  prefix: string;
+  directory: string;
+  namePrefix: string;
+};
+
+export type LocalPathEntry = { name: string; dir: boolean };
+
 export type SshHosts = { hosts: string[]; patterns: string[] };
+
+export function parseLocalDrivePath(text: string): LocalPathToken | null {
+  const normalized = text.replaceAll("\\", "/");
+  if (!/^[A-Za-z]:\//.test(normalized)) return null;
+  const slash = normalized.lastIndexOf("/");
+  return { prefix: text, directory: normalized.slice(0, slash + 1), namePrefix: normalized.slice(slash + 1) };
+}
+
+export function localPathItems(token: LocalPathToken, entries: LocalPathEntry[]) {
+  const prefix = token.namePrefix.toLowerCase();
+  return entries
+    .filter((entry) => !prefix || entry.name.toLowerCase().startsWith(prefix))
+    .sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name))
+    .map((entry) => ({
+      value: `${token.directory}${entry.name}${entry.dir ? "/" : ""}`,
+      label: `${entry.name}${entry.dir ? "/" : ""}`,
+    }));
+}
+
+export async function localDriveItems(text: string) {
+  const token = parseLocalDrivePath(text);
+  if (!token) return null;
+  try {
+    const entries = await readdir(token.directory, { withFileTypes: true });
+    return localPathItems(token, entries.map((entry) => ({ name: entry.name, dir: entry.isDirectory() })));
+  } catch {
+    return [];
+  }
+}
 
 const SCHEMES = new Set(["http", "https", "file", "ftp", "sftp", "doi", "mailto", "ssh", "git"]);
 const REMOTE = /(?:^|[\s"'`(])((?:[\w.+-]+@)?(?:\[[^\]]+\]|[\w.-]+)):([^\s"'`]*)$/;

@@ -7,12 +7,14 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import {
   BUILTIN_TOPICS,
+  addDirArgument,
   harvestHits,
   label,
   normTags,
   parseQuery,
   draftSeed,
   isMachinePath,
+  isPathLikeToken,
   pathToken,
   quotePath,
   rankPath,
@@ -28,6 +30,7 @@ import {
   applyRemoteCompletion,
   hostAllowed,
   isAltSlash,
+  localDriveItems,
   parseKnownHosts,
   parseRemoteToken,
   parseSshConfigHosts,
@@ -952,7 +955,18 @@ function installAutocomplete(pi: ExtensionAPI) {
             return null;
           }
         }
-        if (!pathToken(before)) {
+        const addDirPath = addDirArgument(before);
+        if (addDirPath !== null && isPathLikeToken(addDirPath)) {
+          const local = await localDriveItems(addDirPath);
+          if (local?.length) return { items: local, prefix: addDirPath };
+          const probe = addDirPath.startsWith("/") ? `x ${addDirPath}` : addDirPath;
+          const delegated = await current.getSuggestions([probe], 0, probe.length, options);
+          return delegated ? { ...delegated, prefix: delegated.prefix || addDirPath } : null;
+        }
+        const path = pathToken(before);
+        const local = path ? await localDriveItems(path) : null;
+        if (local?.length) return { items: local, prefix: path };
+        if (!path) {
           const seed = draftSeed(before);
           const cwd = (ctx as ShelfCtx).cwd ?? process.cwd();
           const matches = shelfMatches(await storedItems(cwd), seed, options.force === true);

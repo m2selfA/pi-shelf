@@ -1,9 +1,12 @@
+import { createHash } from "node:crypto";
 import type { Item, TopicDef } from "./match.ts";
 
 export type Scope = "global" | "project";
 export type DynamicSource = { id: string; category: string; tags: string[]; command: string };
+/** A named command whose stdout lines become candidates for a {{name=@id}} slot. */
+export type ValueProvider = { id: string; command: string; label?: string };
 export type Collection = { version: 2; items: Item[]; archive: Item[] };
-export type Rules = { version: 1; topics: TopicDef[]; sources: DynamicSource[] };
+export type Rules = { version: 1; topics: TopicDef[]; sources: DynamicSource[]; values: ValueProvider[] };
 export type ProjectShelf = {
   version: 1;
   remote: string;
@@ -11,11 +14,16 @@ export type ProjectShelf = {
   archive: Item[];
   topics: TopicDef[];
   sources: DynamicSource[];
+  values: ValueProvider[];
 };
 export type ScopedItem = Item & { scope: Scope };
 export type ShellCall = { command: string; args: string[] };
 
-export function shellPlan(platformName: string, command: string): ShellCall[] {
+function shellQuote(value: string) {
+  return "'" + value.replaceAll("'", "'\\''") + "'";
+}
+
+export function shellPlan(platformName: string, command: string, cwd = ""): ShellCall[] {
   const text = command.trim();
   if (!text) return [];
   const lower = text.toLowerCase();
@@ -28,7 +36,11 @@ export function shellPlan(platformName: string, command: string): ShellCall[] {
   for (const [prefix, commandName, args] of tagged) {
     if (!lower.startsWith(prefix)) continue;
     const body = text.slice(prefix.length).trim();
-    return body ? [{ command: commandName, args: [...args, body] }] : [];
+    if (!body) return [];
+    // A login shell resets the working directory (Git Bash profiles cd to $HOME), so the
+    // caller's cwd has to be restored before the command runs or relative paths miss.
+    const script = prefix === "bash:" && cwd ? `cd -- ${shellQuote(cwd)} && ${body}` : body;
+    return [{ command: commandName, args: [...args, script] }];
   }
   if (platformName === "win32") {
     return [
@@ -44,11 +56,11 @@ export function emptyCollection(): Collection {
 }
 
 export function emptyRules(): Rules {
-  return { version: 1, topics: [], sources: [] };
+  return { version: 1, topics: [], sources: [], values: [] };
 }
 
 export function emptyProject(remote = ""): ProjectShelf {
-  return { version: 1, remote, items: [], archive: [], topics: [], sources: [] };
+  return { version: 1, remote, items: [], archive: [], topics: [], sources: [], values: [] };
 }
 
 export function normalizeRemote(url: string) {
@@ -84,7 +96,7 @@ export function projectFileUsable(fileRemote: string, currentRemote: string) {
   return normalizeRemote(fileRemote) === normalizeRemote(currentRemote);
 }
 
-export function splitLegacy(raw: { version?: number; items?: Item[]; archive?: Item[]; topics?: TopicDef[]; sources?: DynamicSource[] }) {
+export function splitLegacy(raw: { version?: number; items?: Item[]; archive?: Item[]; topics?: TopicDef[]; sources?: DynamicSource[]; values?: ValueProvider[] }) {
   const collection: Collection = {
     version: 2,
     items: Array.isArray(raw.items) ? raw.items : [],
@@ -94,8 +106,9 @@ export function splitLegacy(raw: { version?: number; items?: Item[]; archive?: I
     version: 1,
     topics: Array.isArray(raw.topics) ? raw.topics : [],
     sources: Array.isArray(raw.sources) ? raw.sources : [],
+    values: Array.isArray(raw.values) ? raw.values : [],
   };
-  const strip = Array.isArray(raw.topics) || Array.isArray(raw.sources) || raw.version !== 2;
+  const strip = Array.isArray(raw.topics) || Array.isArray(raw.sources) || Array.isArray(raw.values) || raw.version !== 2;
   return { collection, rules, strip };
 }
 
@@ -120,7 +133,71 @@ export function mergeRules(global: Rules, project: Rules): Rules {
     if (index >= 0) sources[index] = source;
     else sources.push(source);
   }
-  return { version: 1, topics, sources };
+  const values = [...global.values];
+  for (const value of project.values) {
+    const index = values.findIndex((item) => item.id.toLowerCase() === value.id.toLowerCase());
+    if (index >= 0) values[index] = value;
+    else values.push(value);
+  }
+  return { version: 1, topics, sources, values };
+}
+
+/**
+ * Three-way-safe merge used by every save: the file on disk may have been changed by
+ * another Pi window between our read and our write, so writes re-read it under the lock
+ * and union by id instead of replacing the file with our stale snapshot.
+ *
+ * Deletion is not a tombstone here: an item archived in memory is excluded from the disk
+ * copy, which keeps the common "delete in one window" case correct.
+ */
+export function mergeCollection(disk: Collection, memory: Collection): Collection {
+  const archived = new Set(memory.archive.map((item) => item.id));
+  // Missing or malformed timestamps compare as 0: NaN would make every comparison false
+  // and silently keep the stale disk copy.
+  const stamp = (value: string | undefined) => {
+    const parsed = Date.parse(value ?? "");
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+  const byId = new Map<string, Item>();
+  for (const item of disk.items) if (!archived.has(item.id)) byId.set(item.id, item);
+  for (const item of memory.items) {
+    const previous = byId.get(item.id);
+    // Prefer whichever copy was edited last; the memory copy wins a tie.
+    if (!previous || stamp(item.updated) >= stamp(previous.updated)) byId.set(item.id, item);
+  }
+  const archive = new Map<string, Item>();
+  for (const item of disk.archive) archive.set(item.id, item);
+  for (const item of memory.archive) archive.set(item.id, item);
+  return { version: 2, items: [...byId.values()], archive: [...archive.values()] };
+}
+
+export function mergeProject(disk: ProjectShelf, memory: ProjectShelf): ProjectShelf {
+  const collection = mergeCollection(
+    { version: 2, items: disk.items, archive: disk.archive },
+    { version: 2, items: memory.items, archive: memory.archive },
+  );
+  return {
+    version: 1,
+    remote: memory.remote || disk.remote,
+    items: collection.items,
+    archive: collection.archive,
+    // Rules are small and authored in one place; the memory copy is the newer one.
+    topics: memory.topics,
+    sources: memory.sources,
+    values: memory.values,
+  };
+}
+
+export function hashText(text: string) {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
+export type TrustState = "first-seen" | "approved" | "changed";
+
+/** TOFU: the first hash is recorded, and only a later change needs a human decision. */
+export function trustState(approved: string | undefined, current: string): TrustState {
+  if (!approved) return "first-seen";
+  return approved === current ? "approved" : "changed";
 }
 
 export function archiveItem(bag: { items: Item[]; archive: Item[] }, id: string, when: string) {

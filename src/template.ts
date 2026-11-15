@@ -1,6 +1,14 @@
-export type Slot = { name: string; fallback: string; choices: string[] };
+export type Slot = {
+  name: string;
+  fallback: string;
+  choices: string[];
+  /** {{name=@provider}}: candidate values come from a named command, not the user. */
+  provider?: string;
+};
 
 const SLOT = /\{\{([^{}]+)\}\}/g;
+const QUOTE = String.fromCharCode(39);
+const BACKSLASH = String.fromCharCode(92);
 
 function parseSlot(body: string): Slot {
   const colon = body.indexOf(":");
@@ -8,9 +16,11 @@ function parseSlot(body: string): Slot {
   const choiceText = colon >= 0 ? body.slice(colon + 1) : "";
   const eq = head.indexOf("=");
   const name = (eq >= 0 ? head.slice(0, eq) : head).trim();
-  const fallback = eq >= 0 ? head.slice(eq + 1).trim() : "";
+  const raw = eq >= 0 ? head.slice(eq + 1).trim() : "";
+  const provider = raw.startsWith("@") && raw.length > 1 ? raw.slice(1) : "";
+  const fallback = provider ? "" : raw;
   const choices = choiceText.split("|").map((item) => item.trim()).filter(Boolean);
-  return { name, fallback, choices };
+  return provider ? { name, fallback, choices, provider } : { name, fallback, choices };
 }
 
 export function templateSlots(value: string): Slot[] {
@@ -31,6 +41,84 @@ export function fillTemplate(value: string, values: Record<string, string>) {
     const given = values[slot.name];
     return given == null ? slot.fallback || full : given;
   });
+}
+
+/**
+ * Expand Pi's positional placeholders ($1, $@, ${1:-default}, ...) and leave every other
+ * byte alone. A saved command such as `awk '{print $1}'` or `for f in "$@"; do ...` is
+ * data, not a prompt, so a placeholder only expands where it cannot already be shell
+ * syntax: outside single quotes and not escaped by a backslash.
+ */
+export function applyPositionals(value: string, args: string[]) {
+  let out = "";
+  let mode: "code" | "single" | "skip" = "code";
+  let cursor = 0;
+  while (cursor < value.length) {
+    const ch = value[cursor];
+    const rest = value.slice(cursor);
+    if (mode === "code" && ch === "$") {
+      if (rest.startsWith("${")) {
+        const end = value.indexOf("}", cursor + 2);
+        if (end > cursor + 2) {
+          const body = value.slice(cursor + 2, end);
+          const numbered = body.match(/^(\d+):-([\s\S]*)$/);
+          if (numbered) {
+            out += args[Number(numbered[1]) - 1] ?? numbered[2] ?? "";
+            cursor = end + 1;
+            continue;
+          }
+          if (body.startsWith("@:-")) {
+            out += args.length ? args.join(" ") : body.slice(3);
+            cursor = end + 1;
+            continue;
+          }
+          if (body.startsWith("@:")) {
+            const spec = body.slice(2);
+            const colon = spec.indexOf(":");
+            const start = Number(colon >= 0 ? spec.slice(0, colon) : spec);
+            const count = colon >= 0 ? Number(spec.slice(colon + 1)) : undefined;
+            const part = Number.isFinite(start) && start > 0 ? args.slice(start - 1, count == null ? undefined : start - 1 + count) : [];
+            if (part.length) {
+              out += part.join(" ");
+              cursor = end + 1;
+              continue;
+            }
+          }
+        }
+      }
+      // An all-arguments token with nothing to substitute is left alone: a saved command
+      // that contains $@ is data, and silently deleting it would corrupt the entry.
+      if (rest.startsWith("$ARGUMENTS")) {
+        if (args.length) {
+          out += args.join(" ");
+          cursor += "$ARGUMENTS".length;
+          continue;
+        }
+      }
+      if (rest.startsWith("$@")) {
+        if (args.length) {
+          out += args.join(" ");
+          cursor += 2;
+          continue;
+        }
+      }
+      const numbered = rest.match(/^\$(\d+)([A-Za-z0-9_]*)/);
+      // awk fields ($1), jQuery-like $1foo and shell $1x are not Pi placeholders.
+      if (numbered && !numbered[2]) {
+        const got = args[Number(numbered[1]) - 1];
+        out += got == null ? "{{\$" + numbered[1] + "}}" : got;
+        cursor += numbered[0].length;
+        continue;
+      }
+    }
+    out += ch ?? "";
+    cursor += 1;
+    if (mode === "skip") mode = "code";
+    else if (ch === BACKSLASH) mode = "skip";
+    else if (mode === "code" && ch === QUOTE) mode = "single";
+    else if (mode === "single" && ch === QUOTE) mode = "code";
+  }
+  return out;
 }
 
 export function sessionFolder(cwd: string) {
@@ -73,7 +161,7 @@ export function splitArgs(text: string) {
     if (quote) {
       if (ch === quote) quote = "";
       else current += ch;
-    } else if (ch === "\"" || ch === "'") quote = ch;
+    } else if (ch === "\"" || ch === QUOTE) quote = ch;
     else if (/\s/.test(ch)) {
       if (current) args.push(current);
       current = "";
@@ -100,55 +188,4 @@ export function parsePromptMarkdown(text: string) {
     }
   }
   return { description, argumentHint, body: body.replace(/^\n/, "") };
-}
-
-export function applyPositionals(value: string, args: string[]) {
-  let out = "";
-  let i = 0;
-  while (i < value.length) {
-    if (value.startsWith("${", i)) {
-      const end = value.indexOf("}", i + 2);
-      if (end < 0) {
-        out += value[i];
-        i += 1;
-        continue;
-      }
-      const body = value.slice(i + 2, end);
-      const numbered = body.match(/^(\d+):-([\s\S]*)$/);
-      if (numbered) {
-        out += args[Number(numbered[1]) - 1] ?? numbered[2] ?? "";
-      } else if (body.startsWith("@:-")) {
-        out += args.length ? args.join(" ") : body.slice(3);
-      } else if (body.startsWith("@:")) {
-        const spec = body.slice(2);
-        const colon = spec.indexOf(":");
-        const start = Number(colon >= 0 ? spec.slice(0, colon) : spec);
-        const count = colon >= 0 ? Number(spec.slice(colon + 1)) : undefined;
-        const part = Number.isFinite(start) && start > 0 ? args.slice(start - 1, count == null ? undefined : start - 1 + count) : [];
-        out += part.join(" ");
-      } else out += value.slice(i, end + 1);
-      i = end + 1;
-      continue;
-    }
-    if (value.startsWith("$ARGUMENTS", i)) {
-      out += args.join(" ");
-      i += "$ARGUMENTS".length;
-      continue;
-    }
-    if (value.startsWith("$@", i)) {
-      out += args.join(" ");
-      i += 2;
-      continue;
-    }
-    const num = value.slice(i).match(/^\$(\d+)/);
-    if (num) {
-      const got = args[Number(num[1]) - 1];
-      out += got == null ? `{{$${num[1]}}}` : got;
-      i += num[0].length;
-      continue;
-    }
-    out += value[i];
-    i += 1;
-  }
-  return out;
 }

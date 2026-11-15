@@ -35,3 +35,26 @@ test("pi prompt files keep frontmatter and positional arguments", () => {
   assert.equal(applyPositionals("Missing $1", []).includes("{{$1}}"), true);
   assert.deepEqual(splitArgs('review "API compatibility" extra'), ["review", "API compatibility", "extra"]);
 });
+
+test("a slot can name a value provider instead of a default", () => {
+  const slots = templateSlots("Deploy {{branch=@branches}} to {{env=prod}} today");
+  assert.equal(slots.length, 2);
+  assert.equal(slots[0]?.provider, "branches");
+  assert.equal(slots[0]?.fallback, "");
+  assert.equal(slots[1]?.provider, undefined);
+  assert.equal(slots[1]?.fallback, "prod");
+  assert.equal(fillTemplate("{{branch=@branches}}", { branch: "main" }), "main");
+});
+
+test("a saved shell command keeps its own $ placeholders", () => {
+  // These are commands, not prompts: expanding them silently deletes characters.
+  assert.equal(applyPositionals("awk '{print $1}' data.txt", []), "awk '{print $1}' data.txt");
+  assert.equal(applyPositionals('for f in "$@"; do echo "$f"; done', []), 'for f in "$@"; do echo "$f"; done');
+  assert.equal(applyPositionals("git log --pretty=format:%h $@", []), "git log --pretty=format:%h $@");
+  assert.equal(applyPositionals("Next ${@:9}", ["a"]), "Next ${@:9}");
+  assert.equal(applyPositionals("echo $1foo and jQuery $1bar", ["x"]), "echo $1foo and jQuery $1bar");
+  assert.equal(applyPositionals("escaped \\$1 stays", ["x"]), "escaped \\$1 stays");
+  // A prompt that does supply arguments still expands them.
+  assert.equal(applyPositionals("Review $1 now", ["security"]), "Review security now");
+  assert.equal(applyPositionals("all $ARGUMENTS here", ["a", "b"]), "all a b here");
+});

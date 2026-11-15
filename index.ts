@@ -1581,6 +1581,12 @@ async function pinDynamic(ctx: ShelfCtx) {
 }
 
 type CompleteItem = { value: string; label: string; description?: string; shelfKind?: "shelf" | "remote" | "tool" | "package" };
+
+/** "-" and "_" are equivalent when deciding whether a candidate is a prefix hit. */
+function sameStem(value: string, prefix: string) {
+  const normalize = (text: string) => text.toLowerCase().replace(/[-_]+/g, "_");
+  return normalize(value).startsWith(normalize(prefix));
+}
 type CompleteProvider = {
   triggerCharacters?: string[];
   getSuggestions: (
@@ -1798,7 +1804,7 @@ function installAutocomplete(pi: ExtensionAPI) {
     ui.addAutocompleteProvider?.((current) => ({
       // "_" is a natural trigger for tool names (web_, mcp__github__), so the list can
       // open without Tab while the user is still inside an identifier.
-      triggerCharacters: [":", "@", "#", "_"],
+      triggerCharacters: [":", "@", "#", "_", "-"],
       async getSuggestions(lines, cursorLine, cursorCol, options) {
         const before = (lines[cursorLine] ?? "").slice(0, cursorCol);
         const interception = shelfInterceptionContext(before, options.force === true);
@@ -1875,7 +1881,7 @@ function installAutocomplete(pi: ExtensionAPI) {
             // keep their usual priority.
             const tools = toolContext && toolContext.prefix === shelfQuery.seed ? toolMatches : [];
             const packages = toolContext && toolContext.prefix === shelfQuery.seed ? packageMatches : [];
-            const toolFirst = tools.some((tool) => tool.value.toLowerCase().startsWith(shelfQuery.seed.toLowerCase()));
+            const toolFirst = tools.some((tool) => sameStem(tool.value, shelfQuery.seed));
             const packageFirst = packages.length > 0 && !toolFirst;
             const toolBlock = packageFirst ? [...packages, ...tools] : [...tools, ...packages];
             // A strong tool/plugin hit owns the token: the shelf entries that merely
@@ -1892,7 +1898,7 @@ function installAutocomplete(pi: ExtensionAPI) {
           } catch {
             native = null;
           }
-          const toolFirst = toolMatches.some((tool) => tool.value.toLowerCase().startsWith(toolContext.prefix.toLowerCase()));
+          const toolFirst = toolMatches.some((tool) => sameStem(tool.value, toolContext.prefix));
           const block = toolFirst || !packageMatches.length ? [...toolMatches, ...packageMatches] : [...packageMatches, ...toolMatches];
           const items = native && native.prefix === toolContext.prefix ? [...block, ...native.items] : block;
           return { items, prefix: toolContext.prefix };

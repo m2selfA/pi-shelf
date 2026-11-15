@@ -56,6 +56,7 @@ assert.deepEqual((await suggest("please use web", false)), [], "a bare word wait
 assert.deepEqual(await suggest("please use web", true), ["web_search", "web_fetch"], "Tab completes a bare word");
 assert.deepEqual(await suggest("call mcp__github__se", false), ["mcp__github__search_code"], "MCP names complete");
 assert.deepEqual(await suggest("please use zzz", true), [], "unknown tokens stay quiet");
+assert.deepEqual(await suggest("use web-", false), ["web_search", "web_fetch"], "hyphen matches underscore tool names");
 assert.deepEqual(await suggest("use ssh_", false), ["ssh_bash", "ssh_upload"], "plugin tools complete by tool name");
 assert.deepEqual(await suggest("use pi-ssh", false), ["pi-ssh-tools", "ssh_bash", "ssh_upload"], "a plugin name opens by itself, with its tools");
 assert.deepEqual(await suggest("use pi-ssh-tools", false), ["pi-ssh-tools", "ssh_bash", "ssh_upload"], "the full plugin name works too");

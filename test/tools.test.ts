@@ -9,9 +9,24 @@ test("a token with an underscore opens by itself; a bare word waits for Tab", ()
   assert.deepEqual(toolToken("please run web", true), { prefix: "web", auto: false });
 });
 
-test("a pi- plugin name opens by itself, other hyphenated words do not", () => {
+test("hyphen and underscore are activation characters", () => {
   assert.deepEqual(toolToken("use pi-ssh", false), { prefix: "pi-ssh", auto: true });
-  assert.equal(toolToken("a well-known fact", false), null);
+  assert.deepEqual(toolToken("use web-", false), { prefix: "web-", auto: true });
+  assert.equal(toolToken("a well-known", false)?.auto, true);
+  assert.equal(toolToken("plainword", false), null);
+});
+
+test("- and _ match each other in tool names", () => {
+  const tools = [
+    { name: "web_search", description: "Search", exposure: "direct" },
+    { name: "web_fetch", description: "Fetch", exposure: "direct" },
+    { name: "web__run", description: "Run", exposure: "direct" },
+    { name: "mcp__github__search_code", description: "Code", exposure: "direct" },
+  ];
+  assert.deepEqual(rankTools(tools, "web-").map((tool) => tool.name).sort(), ["web__run", "web_fetch", "web_search"]);
+  assert.deepEqual(rankTools(tools, "web_").map((tool) => tool.name).sort(), ["web__run", "web_fetch", "web_search"]);
+  assert.deepEqual(rankTools(tools, "mcp-github-").map((tool) => tool.name), ["mcp__github__search_code"]);
+  assert.deepEqual(rankTools([{ name: "web-search", exposure: "direct" }], "web_").map((tool) => tool.name), ["web-search"]);
 });
 
 test("commands, attachments and tags are not tool tokens", () => {
@@ -62,6 +77,8 @@ test("a plugin alias finds its tools without knowing their names", () => {
   assert.equal(packages[0]?.name, "pi-ssh-tools");
   assert.equal(packages[0]?.toolCount, 2);
   assert.match(packages[0]?.description ?? "", /2 个工具/);
+  // A tool-name query must not drag the plugin row in as a substring hit.
+  assert.equal(rankPackages(pluginTools, "ssh_").length, 0);
 });
 
 test("descriptions carry the source and the activation state", () => {

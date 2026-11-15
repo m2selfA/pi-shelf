@@ -37,22 +37,27 @@ export function toolToken(text: string, forced: boolean): ToolToken | null {
   const lead = text.slice(0, text.length - prefix.length).slice(-1);
   // "/x", "@x" and "#x" are commands, attachments and tags, not tool names.
   if (lead === "/" || lead === "@" || lead === "#") return null;
-  // Plugin names (pi-ssh-tools) are as distinctive as tool names, so they open on
-  // their own too. Other hyphenated prose waits for Tab.
-  const auto = prefix.includes("_") || /^pi-[a-z0-9]/i.test(prefix);
+  // "_" and "-" are the activation characters for tool/plugin tokens; both open on
+  // their own. Other prose still waits for Tab.
+  const auto = prefix.includes("_") || prefix.includes("-");
   if (!forced && !auto) return null;
   return { prefix, auto };
 }
 
+/** "_" and "-" are interchangeable for matching: web- finds web_search. */
+function normalizeSeparators(text: string) {
+  return text.replace(/[-_]+/g, "_");
+}
+
 function rank(name: string, prefix: string) {
-  const value = name.toLowerCase();
-  const query = prefix.toLowerCase();
+  const value = normalizeSeparators(name.toLowerCase());
+  const query = normalizeSeparators(prefix.toLowerCase());
   if (!query) return Infinity;
   if (value === query) return 0;
   if (value.startsWith(query)) return 1;
   // A segment hit ("search" -> web_search, "ssh" -> pi-ssh-tools) beats a random
   // substring, and both beat a scattered subsequence.
-  if (value.split(/[_.:/@-]+/).some((segment) => segment.startsWith(query))) return 2;
+  if (value.split(/[_.:/@]+/).some((segment) => segment.startsWith(query))) return 2;
   if (value.includes(query)) return 3;
   let cursor = 0;
   for (const char of value) if (char === query[cursor]) cursor += 1;
@@ -183,7 +188,9 @@ export function rankPackages(tools: ToolLike[], prefix: string, limit = 3): Pack
   }
   return [...groups.entries()]
     .map(([name, group]) => ({ name, group, rank: bestRank(group.aliases, prefix) }))
-    .filter((hit) => hit.rank <= 3)
+    // Package rows are for plugin-name queries (exact, prefix, segment). A substring
+    // hit would put "pi-ssh-tools" under every "ssh_" query as well.
+    .filter((hit) => hit.rank <= 2)
     .sort((a, b) => a.rank - b.rank || b.group.tools.size - a.group.tools.size || a.name.localeCompare(b.name))
     .slice(0, limit)
     .map(({ name, group }) => {

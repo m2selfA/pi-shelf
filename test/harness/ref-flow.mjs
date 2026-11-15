@@ -34,6 +34,7 @@ const ctx = { ui, mode: "rpc", cwd: process.cwd(), sessionManager: { getEntries:
 await shelf.handler("ref add https://github.com/cryoem/eman2", ctx);
 await shelf.handler("ref add 3dem/relion", ctx);
 await shelf.handler("ref add earendil-works/pi", ctx);
+await shelf.handler("ref add https://github.com/3dem/relion --alias rel --aliases rel5", ctx);
 
 notes.length = 0;
 await shelf.handler("ref list", ctx);
@@ -42,6 +43,9 @@ assert.match(notes.at(-1), /3dem\/relion/);
 
 await shelf.handler("ref cryo", ctx);
 assert.equal(inserted.at(-1), "https://github.com/cryoem/eman2");
+
+await shelf.handler("ref rel", ctx);
+assert.equal(inserted.at(-1), "https://github.com/3dem/relion");
 
 await shelf.handler("ref eman", ctx);
 assert.equal(inserted.at(-1), "https://github.com/cryoem/eman2");

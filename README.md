@@ -93,14 +93,19 @@ TUI 里 `/shelf` 和 `ctrl+shift+k` 打开单屏选择器：顶部输入框实�
 
 ```text
 /shelf ref add https://github.com/cryoem/eman2
-/shelf ref add 3dem/relion
+/shelf ref add 3dem/relion --alias rel
 /shelf ref add 10.1038/s41592-024-02477-2
 /shelf ref eman          → 插入 https://github.com/cryoem/eman2
+/shelf ref rel           → 插入 https://github.com/3dem/relion
 /shelf ref list
+/shelf ref edit          → 改标题和别名
 /shelf ref rm
 ```
 
+`--alias` / `--aliases`（或 `--alias=a,b`）可以追加自定义别名；`ref edit` 里逗号分隔的别名会**替换**原列表，留空则清空。
+
 - 输入可以很随意：完整 URL、`owner/repo`、带 `.git` 或 `/tree/main` 的地址，都会归一化成 `https://github.com/owner/repo`——这正是 GitHub MCP 与 API 认的形式；DOI 归一化成 `https://doi.org/...`，arXiv 归一化成 `https://arxiv.org/abs/<id>`。
+- 不指定别名时自动派生：GitHub 为 `repo`、`owner`、`owner/repo` 及二者分词，外加抓取到的标题；DOI 为 DOI 后缀及分词；arXiv 为编号；普通 URL 为 hostname、host/path 分词；路径为 basename 及分词。
 - 添加 GitHub/DOI/arXiv 时会顺带抓标题作为额外检索词（失败也不影响保存）。
 - 模糊词匹配标题、别名、标签和正文；命中唯一就直接插入，命中多条就列出来让你选，绝不猜。
 - 引用存在全局架子的 `Ref` 类目，不写进仓库文件。

@@ -1803,7 +1803,33 @@ function refRows(layer: ShelfLayer) {
 }
 
 function refLabel(row: Row) {
-  return `${row.title}  →  ${row.value}`;
+  const aliases = row.aliases?.length ? `  [${row.aliases.slice(0, 4).join(", ")}]` : "";
+  return `${row.title}  →  ${row.value}${aliases}`;
+}
+
+function splitAliasArgs(tokens: string[]) {
+  const input: string[] = [];
+  const aliases: string[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (token === "--alias" || token === "--aliases") {
+      const value = tokens[index + 1] ?? "";
+      aliases.push(...value.split(","));
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("--alias=")) {
+      aliases.push(...token.slice("--alias=".length).split(","));
+      continue;
+    }
+    if (token.startsWith("--aliases=")) {
+      aliases.push(...token.slice("--aliases=".length).split(","));
+      continue;
+    }
+    if (token.startsWith("--")) continue;
+    input.push(token);
+  }
+  return { input: input.join(" ").trim(), aliases: [...new Set(aliases.map((alias) => alias.trim()).filter(Boolean))] };
 }
 
 async function refFlow(ctx: ShelfCtx, layer: ShelfLayer, args: string) {
@@ -1819,9 +1845,11 @@ async function refFlow(ctx: ShelfCtx, layer: ShelfLayer, args: string) {
     return;
   }
   if (sub === "add") {
-    let input = rest.join(" ").trim();
+    const parsedArgs = splitAliasArgs(rest);
+    let input = parsedArgs.input;
     if (!input) input = (await ctx.ui.input("仓库地址或 URL（例如 owner/repo 或 https://github.com/...）"))?.trim() ?? "";
     if (!input) return;
+    const requestedAliases = parsedArgs.aliases;
     const parsed = parseTarget(input);
     if (!parsed) {
       ctx.ui.notify("认不出这个地址。支持 owner/repo、GitHub URL、DOI、arXiv 或 http(s) URL。", "warning");
@@ -1835,7 +1863,7 @@ async function refFlow(ctx: ShelfCtx, layer: ShelfLayer, args: string) {
           title: parsed.label,
           value: parsed.value,
           tags: ["ref", parsed.kind, ...(enriched.tags ?? [])],
-          aliases: [...parsed.aliases, ...(enriched.title ? [enriched.title] : [])],
+          aliases: [...new Set([...parsed.aliases, ...requestedAliases, ...(enriched.title ? [enriched.title] : [])])],
         }, "global", ctx);
         ctx.ui.notify(`已添加 ${item.title}  →  ${item.value}`, "info");
         return;
@@ -1848,9 +1876,32 @@ async function refFlow(ctx: ShelfCtx, layer: ShelfLayer, args: string) {
       title: parsed.label,
       value: parsed.value,
       tags: ["ref", parsed.kind],
-      aliases: parsed.aliases,
+      aliases: [...new Set([...parsed.aliases, ...requestedAliases])],
     }, "global", ctx);
     ctx.ui.notify(`已添加 ${item.title}  →  ${item.value}`, "info");
+    return;
+  }
+  if (sub === "edit") {
+    const refs = refRows(layer);
+    const list = choices(refs, refLabel);
+    const picked = list.pick(await ctx.ui.select("编辑哪条引用", list.options));
+    if (!picked) return;
+    const title = await askDefault(ctx, "标题", picked.title);
+    if (title === undefined) return;
+    const currentAliases = (picked.aliases ?? []).join(", ");
+    const aliasAnswer = await ctx.ui.input(`别名（逗号分隔；留空清除。当前：${currentAliases || "无"}）`);
+    const aliases = aliasAnswer == null
+      ? picked.aliases ?? []
+      : aliasAnswer.split(",").map((alias) => alias.trim()).filter(Boolean);
+    const scope = picked.scope ?? "global";
+    const bag = bagFor(layer, scope);
+    const stored = bag.items.find((item) => item.id === picked.id);
+    if (!stored) return;
+    stored.title = title || stored.title;
+    stored.aliases = [...new Set(aliases)];
+    stored.updated = now();
+    await saveScope(layer, scope);
+    ctx.ui.notify(`已更新 ${stored.title}`, "info");
     return;
   }
   if (sub === "rm" || sub === "delete" || sub === "remove") {

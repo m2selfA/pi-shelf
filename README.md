@@ -31,7 +31,7 @@ npm run typecheck  # tsc --noEmit，strict + noUncheckedIndexedAccess
 | 文件 | 内容 |
 | --- | --- |
 | `$PI_CODING_AGENT_DIR/pi-shelf/store.json`（默认 `~/.pi/agent`） | 全局收藏和归档 |
-| `$PI_CODING_AGENT_DIR/pi-shelf/config.json` | 全局 topic、动态源与变量 provider，可以单独拷贝 |
+| `$PI_CODING_AGENT_DIR/pi-shelf/config.json` | 全局 topic、动态源、变量 provider 与自定义展开，可以单独拷贝 |
 | `$PI_CODING_AGENT_DIR/pi-shelf/trust.json` | 项目文件的批准哈希（一个 checkout 一条） |
 | `$PI_CODING_AGENT_DIR/pi-shelf/diagnostics.json` | 最近一次 `/shelf check` 的死链报告 |
 | `$PI_CODING_AGENT_DIR/pi-shelf/completions.json` | 补全接受频率（按前缀词干，30 天衰减） |
@@ -55,6 +55,7 @@ npm run typecheck  # tsc --noEmit，strict + noUncheckedIndexedAccess
 | 选择提示词，先填变量再插入 | `/shelf prompt` |
 | 把输入框里的变量展开 | `/shelf fill` |
 | 变量候选来自命令 | `/shelf value`：模板写 `{{branch=@branches}}` |
+| 自定义展开 | `/shelf alias`：列出/新增/更改/删除缩写 |
 | 抓取链接标题/标签 | `/shelf enrich` |
 | 检查失效链接 | `/shelf check`，报告写 `diagnostics.json` |
 | 批准项目文件 | `/shelf trust`：文件哈希变了以后恢复项目命令 |
@@ -84,6 +85,30 @@ npm run typecheck  # tsc --noEmit，strict + noUncheckedIndexedAccess
 TUI 里 `/shelf` 和 `ctrl+shift+k` 打开单屏选择器：顶部输入框实时过滤，左边结果，右边完整条目（全文、标签、来源、变量名、使用次数）。`↑/↓` 选择、`Enter` 插入、`Esc` 取消；终端窄于 76 列时只显示列表。RPC 或没有自定义 UI 的环境自动退回原来的两段式对话框。
 
 `Tab` 可以标记多条，`Enter` 把它们按 `placement`（`prepend` / `append`）和 `order` 排好，中间空一行拼起来，先在编辑器里给一份可改的组合预览，再插入。没有 `order` 的条目按 0 排。
+
+### 自定义展开（缩写）
+
+`/shelf alias` 管理缩写，例如：
+
+| 缩写 | 展开为 |
+|---|---|
+| `ws` | `web_search` |
+| `wf` | `web_fetch` |
+| `xb` | `D:/opt/scoop/buckets/xhark/bucket` |
+
+输入缩写后按 Tab/`alt+/` 才展开；缩写不会自动弹出，所以 `ws` 在正文里仍是普通文字。管理界面里「从工具名选」和「从收藏值选」可以直接选现成内容，手动输入支持宏：
+
+| 宏 | 展开 |
+|---|---|
+| `{{date}}` | 本地日期 `YYYY-MM-DD` |
+| `{{time}}` | 本地时间 `HH:MM` |
+| `{{datetime}}` | 日期 + 时间 |
+| `{{clipboard}}` | 当前系统剪贴板；读不到时保留字面量 |
+| `{{uuid}}` | 随机 UUID |
+| `{{random:...}}` | 候选用 `|` 分隔，随机选一个 |
+| `{{cursor}}` | 展开后光标停在这里（标记本身不插入） |
+
+未知宏（例如 `{{shell:...}}`）不会被偷偷执行，会原样保留。缩写存在全局 `config.json`，不写仓库文件。
 
 ### 变量 provider
 

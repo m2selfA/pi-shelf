@@ -12,6 +12,7 @@ Global items live in `pi-shelf/store.json` under Pi's agent directory (`PI_CODIN
 - To collect from the current session, call `harvest` with `topic` set to `github`, `doi`, `arxiv`, `url`, a custom topic id, or `all`. `harvest_github` is only the GitHub topic. The user confirms by count before anything is written.
 - Add a custom topic with `/shelf topic` when the thing to collect is an id or pattern, such as `EMPIAR-\d+`.
 - Dynamic sources are regenerated every pick. `/shelf pin` stores one as a permanent record.
+- `/shelf alias` manages custom abbreviations (list/add/change/delete). They expand only on Tab, so short keys stay ordinary prose otherwise. Values may use `{{date}}`, `{{time}}`, `{{datetime}}`, `{{clipboard}}`, `{{random:a|b}}` and `{{cursor}}`; unknown macros stay literal and shell macros are not executed.
 - `/shelf value` defines a named command whose stdout lines become candidates for `{{name=@id}}` slots. Never put a command inline in a template; reference a provider instead.
 - A project `.pi/shelf.json` is approved by SHA-256 on first sight. If it changes, project sources and providers stay off until `/shelf trust` confirms the new hash; do not tell the user the commands ran when they were suspended.
 - `/shelf enrich` fills a link's title/tags from GitHub, DOI, arXiv or the page title. `/shelf check` writes a dead-link report to diagnostics.json; 401/403/429 are "unknown", not dead.

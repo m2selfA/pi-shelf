@@ -1,6 +1,6 @@
 {
   "name": "pi-shelf",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "description": "Categorized shelf for Pi: fuzzy-pick a saved URL or note and paste it into the input.",
   "type": "module",
@@ -8,7 +8,7 @@
     "pi-shelf": "./cli.ts"
   },
   "scripts": {
-    "test": "node --experimental-strip-types --test test/match.test.ts test/complete.test.ts test/store.test.ts test/template.test.ts test/picker.test.ts test/compose.test.ts test/enrich.test.ts test/shortcut.test.ts test/tools.test.ts test/completions.test.ts",
+    "test": "node --experimental-strip-types --test test/match.test.ts test/complete.test.ts test/store.test.ts test/template.test.ts test/picker.test.ts test/compose.test.ts test/enrich.test.ts test/shortcut.test.ts test/tools.test.ts test/completions.test.ts test/alias.test.ts",
     "typecheck": "tsc --noEmit"
   },
   "pi": {

@@ -39,6 +39,7 @@ import { composeParts, type Part } from "./src/compose.ts";
 import { expandShortcuts } from "./src/shortcut.ts";
 import { packageIdentity, rankPackages, rankTools, toolToken, type ToolLike } from "./src/tools.ts";
 import { completionScores, emptyCompletionStats, parseCompletionStats, recordCompletion, type CompletionStats } from "./src/completions.ts";
+import { ALIAS_MACROS, aliasKeyValid, expandAlias, matchAliases } from "./src/alias.ts";
 import { checkUrl, enrichUrl } from "./src/enrich.ts";
 import {
   applyRemoteCompletion,
@@ -69,6 +70,7 @@ import {
   restoreItem,
   shellPlan,
   splitLegacy,
+  type Alias,
   type Collection,
   type DynamicSource,
   type ProjectShelf,
@@ -78,6 +80,30 @@ import {
 } from "./src/store.ts";
 
 const execFileAsync = promisify(execFile);
+
+let clipboardCache: { at: number; value: string | undefined } | undefined;
+/** Read the system clipboard once per second; undefined means "leave {{clipboard}} literal". */
+async function readClipboard(): Promise<string | undefined> {
+  if (clipboardCache && Date.now() - clipboardCache.at < 1000) return clipboardCache.value;
+  const commands: Array<[string, string[]]> =
+    process.platform === "win32"
+      ? [["powershell", ["-NoProfile", "-Command", "Get-Clipboard -Raw"]]]
+      : process.platform === "darwin"
+        ? [["pbpaste", []]]
+        : [["wl-paste", ["-n"]], ["xclip", ["-selection", "clipboard", "-o"]]];
+  let value: string | undefined;
+  for (const [command, args] of commands) {
+    try {
+      const { stdout } = await execFileAsync(command, args, { timeout: 1500, maxBuffer: 1024 * 1024 });
+      value = stdout.replace(/\r\n/g, "\n").replace(/\n$/, "");
+      break;
+    } catch {
+      // try the next platform tool
+    }
+  }
+  clipboardCache = { at: Date.now(), value };
+  return value;
+}
 // getAgentDir honours PI_CODING_AGENT_DIR; hardcoding ~/.pi/agent silently split the shelf
 // into two stores whenever the agent directory was relocated.
 const SHELF_DIR = join(getAgentDir(), "pi-shelf");
@@ -277,6 +303,7 @@ async function readRules(): Promise<Rules> {
       topics: Array.isArray(parsed.topics) ? parsed.topics : [],
       sources: Array.isArray(parsed.sources) ? parsed.sources : [],
       values: Array.isArray(parsed.values) ? parsed.values : [],
+      aliases: Array.isArray(parsed.aliases) ? parsed.aliases : [],
     };
   } catch (error) {
     parseFailure(RULES_FILE, error);
@@ -392,7 +419,7 @@ function firstCorrupt() {
 
 function rulesOf(layer: ShelfLayer) {
   const projectRules = layer.project
-    ? { version: 1 as const, topics: layer.project.topics, sources: layer.project.sources, values: layer.project.values }
+    ? { version: 1 as const, topics: layer.project.topics, sources: layer.project.sources, values: layer.project.values, aliases: [] }
     : emptyRules();
   return mergeRules(layer.rules, projectRules);
 }
@@ -417,6 +444,7 @@ async function readDiskRules(): Promise<Rules> {
       topics: Array.isArray(parsed.topics) ? parsed.topics : [],
       sources: Array.isArray(parsed.sources) ? parsed.sources : [],
       values: Array.isArray(parsed.values) ? parsed.values : [],
+      aliases: Array.isArray(parsed.aliases) ? parsed.aliases : [],
     };
   } catch {
     return emptyRules();
@@ -439,10 +467,14 @@ async function saveRules(rules: Rules) {
   refuseOverwrite(RULES_FILE);
   await withStoreLock(RULES_FILE, async () => {
     const merged = mergeRules(await readDiskRules(), rules);
+    // Aliases are global-only and the memory copy is the authority: merging the disk
+    // list would resurrect a just-deleted alias.
+    merged.aliases = rules.aliases;
     await writeAtomic(RULES_FILE, merged);
     rules.topics = merged.topics;
     rules.sources = merged.sources;
     rules.values = merged.values;
+    rules.aliases = merged.aliases;
   });
 }
 
@@ -942,7 +974,7 @@ async function doctor(ctx: ShelfCtx, layer: ShelfLayer) {
   }
   if (layer.corrupt) lines.push(`ERR   损坏文件  ${layer.corrupt}（已拒绝写入，先修好或移走）`);
   lines.push(`OK    条目数  全局 ${layer.collection.items.length} / 仓库 ${layer.project?.items.length ?? 0} / 归档 ${layer.collection.archive.length + (layer.project?.archive.length ?? 0)}`);
-  lines.push(`OK    动态源  ${rulesOf(layer).sources.length} 个，topic ${rulesOf(layer).topics.length} 个`);
+  lines.push(`OK    动态源  ${rulesOf(layer).sources.length} 个，topic ${rulesOf(layer).topics.length} 个，缩写 ${rulesOf(layer).aliases.length} 条`);
   try {
     const report = JSON.parse(await readFile(DIAGNOSTICS_FILE, "utf8")) as { checkedAt?: string; results?: Array<{ ok?: boolean }> };
     const results = Array.isArray(report.results) ? report.results : [];
@@ -1574,6 +1606,106 @@ async function statsFlow(ctx: ShelfCtx, layer: ShelfLayer) {
   ctx.ui.notify(lines.join("\n"), "info");
 }
 
+
+function aliasSummary(alias: Alias) {
+  const flat = alias.value.replace(/\s+/g, " ").trim();
+  return `${alias.key} → ${flat.length > 80 ? flat.slice(0, 79) + "…" : flat}`;
+}
+
+async function askAliasValue(ctx: ShelfCtx, layer: ShelfLayer, pi: ExtensionAPI, prefill = ""): Promise<string | undefined> {
+  const source = await ctx.ui.select("展开内容来源", ["手动输入（支持宏）", "从工具名选", "从收藏值选"]);
+  if (!source) return undefined;
+  if (source === "从工具名选") {
+    const api = pi as ExtensionAPI & { getAllTools?: () => ToolLike[] };
+    const tools = typeof api.getAllTools === "function" ? api.getAllTools().filter((tool) => tool.exposure !== "hidden") : [];
+    if (!tools.length) {
+      ctx.ui.notify("当前没有可选的工具。", "warning");
+      return undefined;
+    }
+    const picked = await ctx.ui.select("选择工具名", tools.map((tool) => tool.name).sort());
+    return picked;
+  }
+  if (source === "从收藏值选") {
+    const entries = itemsOf(layer);
+    if (!entries.length) {
+      ctx.ui.notify("架子里还没有条目。", "warning");
+      return undefined;
+    }
+    const list = choices(entries, (item) => `@${item.category}  ${item.title}`);
+    return list.pick(await ctx.ui.select("选择收藏值", list.options))?.value;
+  }
+  const entered = await ctx.ui.editor?.(`展开内容（可多行）。支持宏：${ALIAS_MACROS}`, prefill);
+  if (entered == null) return undefined;
+  if (!entered.trim()) {
+    ctx.ui.notify("展开内容不能为空。", "warning");
+    return undefined;
+  }
+  return entered;
+}
+
+async function manageAliases(ctx: ShelfCtx, pi: ExtensionAPI) {
+  const layer = await loadLayer(ctx.cwd ?? process.cwd());
+  warnCorrupt(ctx, layer);
+  const aliases = layer.rules.aliases;
+  const action = await ctx.ui.select("自定义展开", ["列出", "新增", "更改", "删除"]);
+  if (!action) return;
+  if (action === "列出") {
+    ctx.ui.notify(aliases.length ? aliases.map(aliasSummary).join("\n") : "没有自定义展开。", "info");
+    return;
+  }
+  if (action === "新增") {
+    const entered = await askDefault(ctx, "缩写（2–32 个字符，例如 ws）", "ws");
+    const key = entered?.trim() ?? "";
+    if (!key) return;
+    if (!aliasKeyValid(key)) {
+      ctx.ui.notify("缩写只能包含字母、数字、_ . : -，长度 2–32。", "warning");
+      return;
+    }
+    if (aliases.some((alias) => alias.key.toLowerCase() === key.toLowerCase())) {
+      if (!(await confirmDestructive(ctx, `${key} 已存在，覆盖它？`, "覆盖"))) return;
+    }
+    const value = await askAliasValue(ctx, layer, pi);
+    if (value === undefined) return;
+    layer.rules.aliases = [...aliases.filter((alias) => alias.key.toLowerCase() !== key.toLowerCase()), { key, value }];
+    await saveRules(layer.rules);
+    const preview = expandAlias(value, { clipboard: await readClipboard() }).text;
+    ctx.ui.notify(`已添加 ${aliasSummary({ key, value: preview })}`, "info");
+    return;
+  }
+  if (!aliases.length) {
+    ctx.ui.notify("没有自定义展开。", "warning");
+    return;
+  }
+  const indexed = aliases.map((alias, index) => ({ ...alias, index }));
+  const list = choices(indexed, aliasSummary);
+  const picked = list.pick(await ctx.ui.select(action === "更改" ? "更改哪一条" : "删除哪一条", list.options));
+  if (!picked) return;
+  if (action === "删除") {
+    if (!(await confirmDestructive(ctx, `删除 ${picked.key}？`, "删除"))) return;
+    layer.rules.aliases = aliases.filter((_, index) => index !== picked.index);
+    await saveRules(layer.rules);
+    ctx.ui.notify(`已删除 ${picked.key}`, "info");
+    return;
+  }
+  const key = (await askDefault(ctx, "缩写", picked.key))?.trim() ?? "";
+  if (!key || !aliasKeyValid(key)) {
+    if (key) ctx.ui.notify("缩写只能包含字母、数字、_ . : -，长度 2–32。", "warning");
+    return;
+  }
+  if (aliases.some((alias, index) => index !== picked.index && alias.key.toLowerCase() === key.toLowerCase())) {
+    ctx.ui.notify(`${key} 已经被另一条缩写使用。`, "warning");
+    return;
+  }
+  const value = await askAliasValue(ctx, layer, pi, picked.value);
+  if (value === undefined) return;
+  layer.rules.aliases = [
+    ...aliases.filter((alias, index) => index !== picked.index && alias.key.toLowerCase() !== key.toLowerCase()),
+    { key, value },
+  ];
+  await saveRules(layer.rules);
+  ctx.ui.notify(`已更新 ${key}`, "info");
+}
+
 async function pinDynamic(ctx: ShelfCtx) {
   const layer = await loadLayer(ctx.cwd ?? process.cwd());
   const dynamic = (await rows(ctx, layer, ctx.cwd ?? process.cwd())).filter((row) => row.dynamic);
@@ -1590,7 +1722,7 @@ async function pinDynamic(ctx: ShelfCtx) {
   ctx.ui.notify(`已钉住 ${row.title}`, "info");
 }
 
-type CompleteItem = { value: string; label: string; description?: string; shelfKind?: "shelf" | "remote" | "tool" | "package" };
+type CompleteItem = { value: string; label: string; description?: string; shelfKind?: "shelf" | "remote" | "tool" | "package" | "alias"; cursorOffset?: number };
 
 /** "-" and "_" are equivalent when deciding whether a candidate is a prefix hit. */
 function sameStem(value: string, prefix: string) {
@@ -1641,6 +1773,7 @@ const SHELF_ACTIONS = [
   { value: "doctor", description: "检查存储、信任与配置" },
   { value: "trust", description: "批准项目文件（哈希）" },
   { value: "value", description: "管理变量 provider" },
+  { value: "alias", description: "管理自定义展开（缩写→文本）" },
   { value: "enrich", description: "抓取链接标题与标签" },
   { value: "check", description: "检查失效链接" },
   { value: "stats", description: "使用统计" },
@@ -1797,6 +1930,27 @@ function installAutocomplete(pi: ExtensionAPI) {
       ? { ...tool, packageName: identity.name, packageFullName: identity.fullName, packageAliases: identity.aliases }
       : tool;
   };
+  const aliasCandidates = async (prefix: string): Promise<CompleteItem[]> => {
+    // Aliases are global rules, so a config read is enough; do not pay the git calls of
+    // loadLayer on every Tab in an unrelated directory.
+    const rules = await readRules();
+    const matches = matchAliases(rules.aliases, prefix);
+    if (!matches.length) return [];
+    // Only touch the OS clipboard when an alias actually uses the macro; otherwise a
+    // short alias list would pay a PowerShell/pbpaste round-trip on every Tab.
+    const clipboard = matches.some(({ alias }) => alias.value.includes("{{clipboard}}")) ? await readClipboard() : undefined;
+    return matches.map(({ alias }) => {
+      const expanded = expandAlias(alias.value, { clipboard });
+      const flat = expanded.text.replace(/\s+/g, " ").trim();
+      return {
+        value: expanded.text,
+        label: `${alias.key} → ${flat.length > 44 ? flat.slice(0, 43) + "…" : flat}`,
+        description: `自定义展开${expanded.cursorOffset !== undefined ? " · 光标定位" : ""}`,
+        shelfKind: "alias" as const,
+        cursorOffset: expanded.cursorOffset,
+      };
+    });
+  };
   const toolCandidates = (prefix: string): { tools: CompleteItem[]; packages: CompleteItem[] } => {
     const api = pi as ExtensionAPI & { getAllTools?: () => ToolLike[]; getActiveTools?: () => string[] };
     if (typeof api.getAllTools !== "function") return { tools: [], packages: [] };
@@ -1882,6 +2036,24 @@ function installAutocomplete(pi: ExtensionAPI) {
         const path = pathToken(before);
         const local = path ? await localDriveItems(path, { fuzzy: options.force === true }) : null;
         if (local?.length) return { items: local, prefix: path };
+        // Custom abbreviations only expand on an explicit completion key; "ws" in prose
+        // must stay ordinary text.
+        if (options.force === true) {
+          const aliasPrefix = draftSeed(before);
+          if (/^[A-Za-z0-9_.:-]{2,32}$/.test(aliasPrefix)) {
+            const aliasItems = await aliasCandidates(aliasPrefix);
+            if (aliasItems.length) {
+              let native: { items: CompleteItem[]; prefix: string } | null = null;
+              try {
+                native = await current.getSuggestions(lines, cursorLine, cursorCol, options);
+              } catch {
+                native = null;
+              }
+              const items = native && native.prefix === aliasPrefix ? [...aliasItems, ...native.items] : aliasItems;
+              return { items, prefix: aliasPrefix };
+            }
+          }
+        }
         // Tool names come from Pi's live registry, never a hardcoded list. A token with
         // "_" (web_, mcp__github__) opens on its own; other tokens need Tab/Alt+/.
         const toolContext = toolToken(before, options.force === true);
@@ -1941,6 +2113,11 @@ function installAutocomplete(pi: ExtensionAPI) {
         const marked = item as CompletionMeta & { shelfKind?: string };
         // A tool name replaces the typed fragment and adds one space, the same rule the
         // shelf/remote insertions use.
+        if (marked.shelfKind === "alias") {
+          recordCompletion(completionStats, prefix, item.value);
+          scheduleCompletionSave();
+          return applyRemoteCompletion(lines, cursorLine, cursorCol, item.value, prefix, false, item.cursorOffset);
+        }
         if (marked.shelfKind === "tool" || marked.shelfKind === "package") {
           recordCompletion(completionStats, prefix, item.value);
           scheduleCompletionSave();
@@ -2025,6 +2202,7 @@ export default function (pi: ExtensionAPI) {
       }
       if (verb === "source") return manageSources(shelf);
       if (verb === "value") return manageValues(shelf);
+      if (verb === "alias") return manageAliases(shelf, pi);
       if (verb === "enrich") return enrichFlow(shelf);
       if (verb === "check") return checkFlow(shelf);
       if (verb === "stats") return statsFlow(shelf, layer);
@@ -2047,6 +2225,8 @@ export default function (pi: ExtensionAPI) {
           archive: scopes.flatMap((scope) => (scope === "project" ? layer.project?.archive ?? [] : layer.collection.archive).map((item) => ({ ...item, scope }))),
           topics: scopes.flatMap((scope) => (scope === "project" ? layer.project?.topics ?? [] : layer.rules.topics).map((topic) => ({ ...topic, scope }))),
           sources: scopes.flatMap((scope) => (scope === "project" ? layer.project?.sources ?? [] : layer.rules.sources).map((source) => ({ ...source, scope }))),
+          values: layer.rules.values,
+          aliases: layer.rules.aliases,
         };
         const target = rest[1] || join(SHELF_DIR, `export-${new Date().toISOString().slice(0, 10)}.json`);
         await writeAtomic(target, bag);
@@ -2059,7 +2239,7 @@ export default function (pi: ExtensionAPI) {
           shelf.ui.notify("用法：/shelf import <文件> [global|project]", "warning");
           return;
         }
-        let bag: { items?: Item[]; topics?: TopicDef[]; sources?: DynamicSource[]; values?: ValueProvider[] };
+        let bag: { items?: Item[]; topics?: TopicDef[]; sources?: DynamicSource[]; values?: ValueProvider[]; aliases?: Alias[] };
         try {
           bag = JSON.parse(await readFile(source, "utf8"));
         } catch (error) {
@@ -2084,18 +2264,19 @@ export default function (pi: ExtensionAPI) {
           await upsert(layer, { category: item.category, title: item.title, value: item.value, tags: item.tags, source: item.source }, target, shelf);
           added += 1;
         }
-        if (Array.isArray(bag.topics) || Array.isArray(bag.sources) || Array.isArray(bag.values)) {
+        if (Array.isArray(bag.topics) || Array.isArray(bag.sources) || Array.isArray(bag.values) || Array.isArray(bag.aliases)) {
           const bagRules: Rules = {
             version: 1,
             topics: Array.isArray(bag.topics) ? bag.topics : [],
             sources: Array.isArray(bag.sources) ? bag.sources : [],
             values: Array.isArray(bag.values) ? bag.values : [],
+            aliases: Array.isArray(bag.aliases) ? bag.aliases : [],
           };
           if (target === "project") {
             const project = bagFor(layer, "project");
-            project.topics = mergeRules({ version: 1, topics: project.topics, sources: [], values: [] }, bagRules).topics;
-            project.sources = mergeRules({ version: 1, topics: [], sources: project.sources, values: [] }, bagRules).sources;
-            project.values = mergeRules({ version: 1, topics: [], sources: [], values: project.values }, bagRules).values;
+            project.topics = mergeRules({ version: 1, topics: project.topics, sources: [], values: [], aliases: [] }, bagRules).topics;
+            project.sources = mergeRules({ version: 1, topics: [], sources: project.sources, values: [], aliases: [] }, bagRules).sources;
+            project.values = mergeRules({ version: 1, topics: [], sources: [], values: project.values, aliases: [] }, bagRules).values;
             await saveProject(layer);
           } else {
             await saveRules(mergeRules(layer.rules, bagRules));

@@ -75,8 +75,8 @@ test("project value hides the global one and delete can be restored", () => {
   const merged = mergeItems([item("g", "https://github.com/3dem/relion"), item("keep", "https://github.com/earendil-works/pi")], [item("p", "https://github.com/3dem/relion")]);
   assert.deepEqual(merged.map((entry) => [entry.id, entry.scope]), [["p", "project"], ["keep", "global"]]);
   const rules = mergeRules(
-    { version: 1, topics: [{ id: "empiar", category: "Data", tags: [], pattern: "old" }], sources: [], values: [] },
-    { version: 1, topics: [{ id: "empiar", category: "Data", tags: ["lab"], pattern: "new" }], sources: [{ id: "src", category: "Path", tags: [], command: "pwd" }], values: [{ id: "branch", command: "git branch" }] },
+    { version: 1, topics: [{ id: "empiar", category: "Data", tags: [], pattern: "old" }], sources: [], values: [], aliases: [] },
+    { version: 1, topics: [{ id: "empiar", category: "Data", tags: ["lab"], pattern: "new" }], sources: [{ id: "src", category: "Path", tags: [], command: "pwd" }], values: [{ id: "branch", command: "git branch" }], aliases: [] },
   );
   assert.equal(rules.topics.length, 1);
   assert.equal(rules.topics[0]?.pattern, "new");

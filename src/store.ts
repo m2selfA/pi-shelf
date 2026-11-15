@@ -5,8 +5,10 @@ export type Scope = "global" | "project";
 export type DynamicSource = { id: string; category: string; tags: string[]; command: string };
 /** A named command whose stdout lines become candidates for a {{name=@id}} slot. */
 export type ValueProvider = { id: string; command: string; label?: string };
+/** A user-defined abbreviation: typing the key + Tab expands to value. */
+export type Alias = { key: string; value: string; description?: string };
 export type Collection = { version: 2; items: Item[]; archive: Item[] };
-export type Rules = { version: 1; topics: TopicDef[]; sources: DynamicSource[]; values: ValueProvider[] };
+export type Rules = { version: 1; topics: TopicDef[]; sources: DynamicSource[]; values: ValueProvider[]; aliases: Alias[] };
 export type ProjectShelf = {
   version: 1;
   remote: string;
@@ -56,7 +58,7 @@ export function emptyCollection(): Collection {
 }
 
 export function emptyRules(): Rules {
-  return { version: 1, topics: [], sources: [], values: [] };
+  return { version: 1, topics: [], sources: [], values: [], aliases: [] };
 }
 
 export function emptyProject(remote = ""): ProjectShelf {
@@ -96,7 +98,7 @@ export function projectFileUsable(fileRemote: string, currentRemote: string) {
   return normalizeRemote(fileRemote) === normalizeRemote(currentRemote);
 }
 
-export function splitLegacy(raw: { version?: number; items?: Item[]; archive?: Item[]; topics?: TopicDef[]; sources?: DynamicSource[]; values?: ValueProvider[] }) {
+export function splitLegacy(raw: { version?: number; items?: Item[]; archive?: Item[]; topics?: TopicDef[]; sources?: DynamicSource[]; values?: ValueProvider[]; aliases?: Alias[] }) {
   const collection: Collection = {
     version: 2,
     items: Array.isArray(raw.items) ? raw.items : [],
@@ -107,8 +109,9 @@ export function splitLegacy(raw: { version?: number; items?: Item[]; archive?: I
     topics: Array.isArray(raw.topics) ? raw.topics : [],
     sources: Array.isArray(raw.sources) ? raw.sources : [],
     values: Array.isArray(raw.values) ? raw.values : [],
+    aliases: Array.isArray(raw.aliases) ? raw.aliases : [],
   };
-  const strip = Array.isArray(raw.topics) || Array.isArray(raw.sources) || Array.isArray(raw.values) || raw.version !== 2;
+  const strip = Array.isArray(raw.topics) || Array.isArray(raw.sources) || Array.isArray(raw.values) || Array.isArray(raw.aliases) || raw.version !== 2;
   return { collection, rules, strip };
 }
 
@@ -139,7 +142,13 @@ export function mergeRules(global: Rules, project: Rules): Rules {
     if (index >= 0) values[index] = value;
     else values.push(value);
   }
-  return { version: 1, topics, sources, values };
+  const aliases = [...global.aliases];
+  for (const alias of project.aliases) {
+    const index = aliases.findIndex((item) => item.key.toLowerCase() === alias.key.toLowerCase());
+    if (index >= 0) aliases[index] = alias;
+    else aliases.push(alias);
+  }
+  return { version: 1, topics, sources, values, aliases };
 }
 
 /**

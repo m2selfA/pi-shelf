@@ -201,6 +201,7 @@ export function applyRemoteCompletion(
   value: string,
   prefix: string,
   directory: boolean,
+  cursorOffset?: number,
 ) {
   const currentLine = lines[cursorLine] ?? "";
   const before = currentLine.slice(0, Math.max(0, cursorCol - prefix.length));
@@ -208,9 +209,22 @@ export function applyRemoteCompletion(
   const suffix = directory ? "" : " ";
   // The editor keeps one logical line per array entry, so a value that spans
   // lines (a prompt template, for example) must be split instead of embedded.
-  const inserted = `${before}${value}`.replace(/\r\n?/g, "\n").split("\n");
+  const head = `${before}${value}`.replace(/\r\n?/g, "\n");
+  const inserted = head.split("\n");
   const last = inserted.pop() ?? "";
   const tail = `${last}${suffix}${after}`;
+  // A {{cursor}} macro (or any caller-supplied offset) places the caret inside the
+  // inserted text instead of after it.
+  if (cursorOffset !== undefined) {
+    const headToCursor = `${before}${value.slice(0, cursorOffset)}`.replace(/\r\n?/g, "\n");
+    const cursorLines = headToCursor.split("\n");
+    const cursorColAt = (cursorLines.pop() ?? "").length;
+    return {
+      lines: [...lines.slice(0, cursorLine), ...inserted, tail, ...lines.slice(cursorLine + 1)],
+      cursorLine: cursorLine + cursorLines.length,
+      cursorCol: cursorColAt,
+    };
+  }
   return {
     lines: [...lines.slice(0, cursorLine), ...inserted, tail, ...lines.slice(cursorLine + 1)],
     cursorLine: cursorLine + inserted.length,

@@ -153,3 +153,24 @@
 - 插入：替换 token 并补一个空格，复用 `applyRemoteCompletion`。接受工具/插件候选时按前缀词干记录一次（`web-`/`web_`/`web` 共用 `web`），同一匹配层级内按 30 天衰减频率排序；高频率项因此排在前面。统计写本地 `completions.json`，不进入仓库。
 - 频率数据：`src/completions.ts` 的 `completionKey` / `recordCompletion` / `completionScores`；每个前缀最多 20 个候选、整个文件最多 200 个前缀，损坏时按空统计处理，写入失败不影响补全。
 - 验证：`test/tools.test.ts` 10 组（token 触发、`_` 自动/`-` 需补全键、排除 `/@#`、排序、隐藏工具、包名推导、插件别名、描述）；`test/harness/tool-completion.mjs` 用假 registry 驱动真实 provider，覆盖自动弹出、Tab、插件名/工具名、apply 与 delegate 分支。另用本机真实 `pi.getAllTools()` 导出的 71 个工具做过查询探针：`ssh_` → 10 个 `ssh_*`，`pi-ssh` → `pi-ssh-tools` + 10 个工具，`pi-runs` → 8 个，`pi-fff` → 2 个，`pi-codex` → 2 个，`search-boost` → 5 个。顺带修掉一个旧问题：短 token（≤4 字符）不再对长 prompt 正文做子序列匹配，避免 `zzz` 命中 `summarizer/analyzes/zero`。
+
+
+## 10. 自定义展开（缩写 + 宏，2026-11-15）
+
+调研参考：
+- TextExpander 的 Advanced Snippet Elements：Date / Time / Clipboard / Cursor / Fill-in / 嵌套 snippet（https://textexpander.com/learn/using/snippets/advanced-snippet-elements/special-codes）。
+- Espanso Extensions：date、clipboard、random、shell、script、form（https://espanso.org/docs/matches/extensions/）。
+- TextMate / VSCode snippets 的 tab trigger 与数字占位符；Pi 原生 prompt template 已有位置参数语义。
+- 结论：缩写（abbreviation）加显式补全键是共同模式；宏只做文本替换，不把缩写变成命令执行面。
+
+实现：
+- `Rules.aliases` 存在全局 `config.json`；`/shelf alias` 提供列出、新增、更改、删除，值来源可选手动输入、工具名、收藏值；手动输入提示可用宏。
+- 缩写只在显式补全（Tab / `alt+/`）时参与，不会自动弹出；匹配精确优先，其次前缀；插入时替换 token 并补空格。
+- 宏集合是刻意收窄的安全子集：`{{date}}`、`{{time}}`、`{{datetime}}`、`{{clipboard}}`、`{{random:a|b}}`、`{{uuid}}`、`{{cursor}}`。未知宏（包括 shell 形式）保持字面量；不执行 shell 或 script。
+- `{{cursor}}` 通过 `applyRemoteCompletion` 的可选 `cursorOffset` 定位光标；同一值多个 cursor 只保留第一个。
+- 频率统计同样记录缩写接受（key 为缩写前缀），因此常用的缩写或工具会在同层排序靠前。
+- 验证：`test/alias.test.ts` 6 组（日期/时间、clipboard 缺失、cursor、random、未知宏/合法 key、匹配）；`test/harness/alias-completion.mjs` 用真实 provider 验证不自动弹出、Tab 展开、路径、宏、cursor；`test/harness/alias-manage.mjs` 用假 UI 验证增/列/改/删。
+
+不借：
+- Espanso/TextExpander 的 shell/script 宏：缩写是纯文本，执行命令应走已有的 value provider（受项目信任与哈希门禁），不混进缩写。
+- Fill-in 表单：已有 prompt template 的变量和 value provider，不重复实现表单 UI。

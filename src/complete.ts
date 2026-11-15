@@ -16,7 +16,46 @@ export type LocalPathToken = {
 
 export type LocalPathEntry = { name: string; dir: boolean };
 
+export type CompletionFilter = { directoriesOnly?: boolean; fuzzy?: boolean };
+
 export type SshHosts = { hosts: string[]; patterns: string[] };
+
+function completionRank(name: string, prefix: string, fuzzy: boolean) {
+  const query = prefix.toLowerCase();
+  if (!query) return 0;
+  const value = name.toLowerCase();
+  if (!fuzzy) return value.startsWith(query) ? 0 : Infinity;
+  if (value === query) return 0;
+  if (value.startsWith(query)) return 1;
+  if (value.includes(query)) return 2;
+  let cursor = 0;
+  for (const char of value) if (char === query[cursor]) cursor += 1;
+  return cursor === query.length ? 3 : Infinity;
+}
+
+function visiblePathName(name: string, prefix: string) {
+  return !name.startsWith(".") || prefix.startsWith(".");
+}
+
+function naturalNameCompare(left: string, right: string) {
+  const a = left.toLowerCase().match(/\d+|\D+/g) ?? [left.toLowerCase()];
+  const b = right.toLowerCase().match(/\d+|\D+/g) ?? [right.toLowerCase()];
+  for (let i = 0; i < Math.min(a.length, b.length); i += 1) {
+    const aPart = a[i]!;
+    const bPart = b[i]!;
+    if (/^\d+$/.test(aPart) && /^\d+$/.test(bPart)) {
+      const difference = Number(aPart) - Number(bPart);
+      if (difference) return difference;
+    } else if (aPart !== bPart) {
+      return aPart < bPart ? -1 : 1;
+    }
+  }
+  return a.length - b.length;
+}
+
+function comparePathEntries(a: { name: string; dir: boolean; rank: number }, b: { name: string; dir: boolean; rank: number }) {
+  return a.rank - b.rank || Number(b.dir) - Number(a.dir) || naturalNameCompare(a.name, b.name);
+}
 
 export function parseLocalDrivePath(text: string): LocalPathToken | null {
   const normalized = text.replaceAll("\\", "/");
@@ -25,23 +64,26 @@ export function parseLocalDrivePath(text: string): LocalPathToken | null {
   return { prefix: text, directory: normalized.slice(0, slash + 1), namePrefix: normalized.slice(slash + 1) };
 }
 
-export function localPathItems(token: LocalPathToken, entries: LocalPathEntry[]) {
-  const prefix = token.namePrefix.toLowerCase();
+export function localPathItems(token: LocalPathToken, entries: LocalPathEntry[], options: CompletionFilter = {}) {
+  const prefix = token.namePrefix;
   return entries
-    .filter((entry) => !prefix || entry.name.toLowerCase().startsWith(prefix))
-    .sort((a, b) => Number(b.dir) - Number(a.dir) || a.name.localeCompare(b.name))
-    .map((entry) => ({
+    .filter((entry) => !options.directoriesOnly || entry.dir)
+    .filter((entry) => visiblePathName(entry.name, prefix))
+    .map((entry) => ({ entry, rank: completionRank(entry.name, prefix, options.fuzzy === true) }))
+    .filter((item) => item.rank !== Infinity)
+    .sort((a, b) => comparePathEntries({ ...a.entry, rank: a.rank }, { ...b.entry, rank: b.rank }))
+    .map(({ entry }) => ({
       value: `${token.directory}${entry.name}${entry.dir ? "/" : ""}`,
       label: `${entry.name}${entry.dir ? "/" : ""}`,
     }));
 }
 
-export async function localDriveItems(text: string) {
+export async function localDriveItems(text: string, options: CompletionFilter = {}) {
   const token = parseLocalDrivePath(text);
   if (!token) return null;
   try {
     const entries = await readdir(token.directory, { withFileTypes: true });
-    return localPathItems(token, entries.map((entry) => ({ name: entry.name, dir: entry.isDirectory() })));
+    return localPathItems(token, entries.map((entry) => ({ name: entry.name, dir: entry.isDirectory() })), options);
   } catch {
     return [];
   }
@@ -91,17 +133,21 @@ export function parseSshConfigHosts(config: string): SshHosts {
   return { hosts, patterns };
 }
 
-export function parseKnownHosts(text: string): string[] {
+export function parseKnownHosts(text: string): SshHosts {
   const hosts: string[] = [];
+  const patterns: string[] = [];
   for (const raw of text.split(/\n/)) {
     const line = raw.trim();
     if (!line || line.startsWith("#") || line.startsWith("|")) continue;
     const field = line.split(/\s+/)[0] ?? "";
     for (const name of field.split(",")) {
-      if (name && !name.startsWith("|") && !name.startsWith("[")) hosts.push(name);
+      if (!name || name.startsWith("|") || name.startsWith("[")) continue;
+      // known_hosts can list wildcard patterns; they only match through the pattern list.
+      if (name.includes("*") || name.includes("?")) patterns.push(name);
+      else hosts.push(name);
     }
   }
-  return hosts;
+  return { hosts, patterns };
 }
 
 function globToRegExp(pattern: string) {
@@ -123,20 +169,21 @@ export function hostAllowed(destination: string, known: SshHosts): boolean {
 
 export type RemoteEntry = { name: string; dir: boolean };
 
-export function remoteEntries(listing: string, namePrefix: string): RemoteEntry[] {
-  const prefix = namePrefix.toLowerCase();
-  const entries: RemoteEntry[] = [];
+export function remoteEntries(listing: string, namePrefix: string, options: CompletionFilter = {}): RemoteEntry[] {
+  const entries: Array<RemoteEntry & { rank: number }> = [];
   for (const raw of listing.split(/\n/)) {
     const line = raw.trim();
     if (!line || line === "./" || line === "../") continue;
     const dir = line.endsWith("/");
     const name = dir ? line.slice(0, -1) : line;
     if (!name || name === "." || name === "..") continue;
-    if (prefix && !name.toLowerCase().startsWith(prefix)) continue;
-    entries.push({ name, dir });
-    if (entries.length >= 30) break;
+    if (options.directoriesOnly && !dir) continue;
+    if (!visiblePathName(name, namePrefix)) continue;
+    const rank = completionRank(name, namePrefix, options.fuzzy === true);
+    if (rank === Infinity) continue;
+    entries.push({ name, dir, rank });
   }
-  return entries;
+  return entries.sort((a, b) => comparePathEntries(a, b)).slice(0, 30).map(({ name, dir }) => ({ name, dir }));
 }
 
 export function remoteItems(token: RemoteToken, entries: RemoteEntry[]) {
@@ -159,9 +206,16 @@ export function applyRemoteCompletion(
   const before = currentLine.slice(0, Math.max(0, cursorCol - prefix.length));
   const after = currentLine.slice(cursorCol);
   const suffix = directory ? "" : " ";
-  const next = [...lines];
-  next[cursorLine] = before + value + suffix + after;
-  return { lines: next, cursorLine, cursorCol: before.length + value.length + suffix.length };
+  // The editor keeps one logical line per array entry, so a value that spans
+  // lines (a prompt template, for example) must be split instead of embedded.
+  const inserted = `${before}${value}`.replace(/\r\n?/g, "\n").split("\n");
+  const last = inserted.pop() ?? "";
+  const tail = `${last}${suffix}${after}`;
+  return {
+    lines: [...lines.slice(0, cursorLine), ...inserted, tail, ...lines.slice(cursorLine + 1)],
+    cursorLine: cursorLine + inserted.length,
+    cursorCol: `${last}${suffix}`.length,
+  };
 }
 
 export function isAltSlash(data: string) {

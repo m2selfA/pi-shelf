@@ -1803,8 +1803,9 @@ function installAutocomplete(pi: ExtensionAPI) {
     });
     ui.addAutocompleteProvider?.((current) => ({
       // "_" is a natural trigger for tool names (web_, mcp__github__), so the list can
-      // open without Tab while the user is still inside an identifier.
-      triggerCharacters: [":", "@", "#", "_", "-"],
+      // open without Tab. "-" is deliberately not a trigger: it matches "_" but only
+      // completes on Tab/alt+/.
+      triggerCharacters: [":", "@", "#", "_"],
       async getSuggestions(lines, cursorLine, cursorCol, options) {
         const before = (lines[cursorLine] ?? "").slice(0, cursorCol);
         const interception = shelfInterceptionContext(before, options.force === true);

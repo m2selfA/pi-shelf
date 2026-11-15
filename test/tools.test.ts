@@ -9,10 +9,12 @@ test("a token with an underscore opens by itself; a bare word waits for Tab", ()
   assert.deepEqual(toolToken("please run web", true), { prefix: "web", auto: false });
 });
 
-test("hyphen and underscore are activation characters", () => {
-  assert.deepEqual(toolToken("use pi-ssh", false), { prefix: "pi-ssh", auto: true });
-  assert.deepEqual(toolToken("use web-", false), { prefix: "web-", auto: true });
-  assert.equal(toolToken("a well-known", false)?.auto, true);
+test("underscore activates, hyphen only matches on an explicit completion request", () => {
+  assert.deepEqual(toolToken("use web_", false), { prefix: "web_", auto: true });
+  assert.equal(toolToken("use web-", false), null);
+  assert.equal(toolToken("use pi-ssh", false), null);
+  assert.deepEqual(toolToken("use web-", true), { prefix: "web-", auto: false });
+  assert.deepEqual(toolToken("use pi-ssh", true), { prefix: "pi-ssh", auto: false });
   assert.equal(toolToken("plainword", false), null);
 });
 

@@ -56,17 +56,19 @@ assert.deepEqual((await suggest("please use web", false)), [], "a bare word wait
 assert.deepEqual(await suggest("please use web", true), ["web_search", "web_fetch"], "Tab completes a bare word");
 assert.deepEqual(await suggest("call mcp__github__se", false), ["mcp__github__search_code"], "MCP names complete");
 assert.deepEqual(await suggest("please use zzz", true), [], "unknown tokens stay quiet");
-assert.deepEqual(await suggest("use web-", false), ["web_search", "web_fetch"], "hyphen matches underscore tool names");
+assert.deepEqual(await suggest("use web-", false), [], "hyphen alone never auto-opens");
+assert.deepEqual(await suggest("use web-", true), ["web_search", "web_fetch"], "hyphen matches underscore after Tab");
 assert.deepEqual(await suggest("use ssh_", false), ["ssh_bash", "ssh_upload"], "plugin tools complete by tool name");
-assert.deepEqual(await suggest("use pi-ssh", false), ["pi-ssh-tools", "ssh_bash", "ssh_upload"], "a plugin name opens by itself, with its tools");
-assert.deepEqual(await suggest("use pi-ssh-tools", false), ["pi-ssh-tools", "ssh_bash", "ssh_upload"], "the full plugin name works too");
+assert.deepEqual(await suggest("use pi-ssh", false), [], "a hyphenated plugin name does not auto-open");
+assert.deepEqual(await suggest("use pi-ssh", true), ["pi-ssh-tools", "ssh_bash", "ssh_upload"], "a plugin name opens on Tab, with its tools");
+assert.deepEqual(await suggest("use pi-ssh-tools", true), ["pi-ssh-tools", "ssh_bash", "ssh_upload"], "the full plugin name works too");
 assert.deepEqual(await suggest("use search-boost", true), ["search-boost", "x_search"], "a hyphenated plugin name works through Tab");
 
 const picked = await provider.getSuggestions(["use web_"], 0, 8, { ...options, force: false });
 const applied = provider.applyCompletion(["use web_"], 0, 8, picked.items[0], picked.prefix);
 assert.deepEqual(applied, { lines: ["use web_search "], cursorLine: 0, cursorCol: 15 }, "the token is replaced and a space follows");
 
-const packageHit = await provider.getSuggestions(["use pi-ssh"], 0, 10, { ...options, force: false });
+const packageHit = await provider.getSuggestions(["use pi-ssh"], 0, 10, { ...options, force: true });
 assert.equal(packageHit.items[0].label, "pi-ssh-tools");
 const packageApplied = provider.applyCompletion(["use pi-ssh"], 0, 10, packageHit.items[0], packageHit.prefix);
 assert.deepEqual(packageApplied, { lines: ["use pi-ssh-tools "], cursorLine: 0, cursorCol: 17 }, "a package name is inserted literally");

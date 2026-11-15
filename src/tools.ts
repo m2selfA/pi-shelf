@@ -24,10 +24,10 @@ export type PackageSuggestion = {
 const TOKEN = /[A-Za-z0-9_.:-]+$/;
 
 /**
- * The tool-name token under the cursor. Explicit Tab always asks; otherwise a token
- * containing "_" or starting with "pi-" opens on its own, because those are identifiers
- * in prose (web_search, mcp__github__search_code, pi-ssh-tools). Bare words such as
- * "read" stay quiet until Tab, so writing normal sentences never pops a tool list.
+ * The tool-name token under the cursor. Explicit Tab/alt+/ always asks. Only "_"
+ * opens on its own (web_search, mcp__github__search_code); "-" is matching-equivalent
+ * to "_" but never auto-opens, so hyphenated prose and pi-ssh-tools stay quiet until
+ * the user asks for completion.
  */
 export function toolToken(text: string, forced: boolean): ToolToken | null {
   const match = text.match(TOKEN);
@@ -37,9 +37,9 @@ export function toolToken(text: string, forced: boolean): ToolToken | null {
   const lead = text.slice(0, text.length - prefix.length).slice(-1);
   // "/x", "@x" and "#x" are commands, attachments and tags, not tool names.
   if (lead === "/" || lead === "@" || lead === "#") return null;
-  // "_" and "-" are the activation characters for tool/plugin tokens; both open on
-  // their own. Other prose still waits for Tab.
-  const auto = prefix.includes("_") || prefix.includes("-");
+  // Only "_" auto-opens. "-" participates in matching but is never an activation
+  // character; a hyphenated token (including pi-ssh-tools) needs Tab/alt+/.
+  const auto = prefix.includes("_");
   if (!forced && !auto) return null;
   return { prefix, auto };
 }

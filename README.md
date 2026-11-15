@@ -98,7 +98,8 @@ TUI 里 `/shelf` 和 `ctrl+shift+k` 打开单屏选择器：顶部输入框实�
 /shelf ref eman          → 插入 https://github.com/cryoem/eman2
 /shelf ref rel           → 插入 https://github.com/3dem/relion
 /shelf ref list
-/shelf ref describe      → 生成/更新描述
+/shelf ref describe      → 生成/更新一条描述
+/shelf ref describe-all  → 更新所有引用描述（--missing 只补空描述）
 /shelf ref edit          → 改标题、描述和别名
 /shelf ref rm
 ```
@@ -109,6 +110,7 @@ TUI 里 `/shelf` 和 `ctrl+shift+k` 打开单屏选择器：顶部输入框实�
 - 不指定别名时自动派生：GitHub 为 `repo`、`owner`、`owner/repo` 及二者分词，外加抓取到的标题；DOI 为 DOI 后缀及分词；arXiv 为编号；普通 URL 为 hostname、host/path 分词；路径为 basename 及分词。
 - 添加 GitHub/DOI/arXiv 时会顺带抓标题作为额外检索词（失败也不影响保存）。
 - 模糊词匹配标题、别名、标签、描述和正文；命中唯一就直接插入，命中多条就列出来让你选（选择行显示描述），绝不猜。
+- `ref describe-all` 并发 3 路为全部 Ref 重新取描述；`--missing` 只填补空描述，已有描述不会被覆盖。单条 `ref describe` 仍可指定条目更新。
 - 添加 GitHub/DOI/arXiv 时会自动取 GitHub API/页面元数据里的描述；`/shelf ref describe` 或 agent 调用 `shelf` 工具的 `ref_describe` 动作时，优先使用 GitHub MCP，失败/为空再尝试 GitHub API，最后用 web_search 的结果总结成一句描述。
 - 引用存在全局架子的 `Ref` 类目，不写进仓库文件。
 

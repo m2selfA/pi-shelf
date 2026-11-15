@@ -2044,6 +2044,55 @@ async function refFlow(ctx: ShelfCtx, layer: ShelfLayer, pi: ExtensionAPI, args:
     ctx.ui.notify(`已添加 ${item.title}  →  ${item.value}`, "info");
     return;
   }
+  if (sub === "describe-all" || sub === "refresh") {
+    const refs = refRows(layer);
+    const missingOnly = rest.includes("--missing");
+    const targets = missingOnly ? refs.filter((row) => !row.description?.trim()) : refs;
+    if (!refs.length) {
+      ctx.ui.notify("还没有引用。用 /shelf ref add <url> 添加。", "info");
+      return;
+    }
+    if (!targets.length) {
+      ctx.ui.notify("所有引用都已有描述。", "info");
+      return;
+    }
+    ctx.ui.notify(`正在更新 ${targets.length} 条引用描述…`, "info");
+    const results = await mapLimit(targets, 3, async (row) => ({
+      row,
+      description: await describeRef(ctx, pi, row).catch(() => undefined),
+    }));
+    const touched = new Set<Scope>();
+    let updated = 0;
+    let unchanged = 0;
+    let unavailable = 0;
+    for (const { row, description } of results) {
+      if (!description) {
+        unavailable += 1;
+        continue;
+      }
+      if ((row.description ?? "").trim() === description.trim()) {
+        unchanged += 1;
+        continue;
+      }
+      const scope = row.scope ?? "global";
+      const bag = bagFor(layer, scope);
+      const stored = bag.items.find((item) => item.id === row.id);
+      if (!stored) {
+        unavailable += 1;
+        continue;
+      }
+      stored.description = description.trim();
+      stored.updated = now();
+      touched.add(scope);
+      updated += 1;
+    }
+    for (const scope of touched) await saveScope(layer, scope);
+    ctx.ui.notify(
+      `引用描述：更新 ${updated} 条，未变化 ${unchanged} 条，无描述来源 ${unavailable} 条。`,
+      unavailable ? "warning" : "info",
+    );
+    return;
+  }
   if (sub === "describe") {
     const refs = refRows(layer);
     const list = choices(refs, refLabel);

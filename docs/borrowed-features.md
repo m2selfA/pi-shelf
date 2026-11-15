@@ -176,3 +176,24 @@
 不借：
 - Espanso/TextExpander 的 shell/script 宏：缩写是纯文本，执行命令应走已有的 value provider（受项目信任与哈希门禁），不混进缩写。
 - Fill-in 表单：已有 prompt template 的变量和 value provider，不重复实现表单 UI。
+
+
+## 11. 精确引用（仓库 URL，2026-11-15）
+
+调研参考：
+- Raycast Quicklinks：名称、标签、Root Search 模糊匹配；可保存 URL/文件/目录，并支持别名与导入（https://manual.raycast.com/quicklinks）。
+- Alfred Web Search / Keyword Input：关键词加参数触发固定 URL，Bookmarks 可按名称/URL/标签搜索（https://www.alfredapp.com/help/features/web-search/）。
+- TextExpander / Espanso 的 popup/choice 字段：候选不唯一时让用户选，而不是猜。
+- buku 的标签/全文检索；GitHub 的 owner/repo 规范。
+
+实现：
+- Item.aliases 可选字段，匹配层级 title → alias（1.5）→ tags（3）→ value（6）→ category（9）；别名只参与检索，不改变展示值。
+- /shelf ref add 支持完整 URL、owner/repo、.git、/tree/main 等写法；GitHub 统一为 https://github.com/owner/repo，DOI 统一为 https://doi.org/...，arXiv 统一为 https://arxiv.org/abs/id；非仓库 URL 原样保留。
+- 添加时从仓库名/owner 派生 aliases（repo、owner、owner/repo、分词），GitHub/DOI/arXiv 尽力抓标题/标签作为额外检索词，失败不影响保存。
+- /shelf ref <query>：唯一命中直接插入精确值；多条命中用选择框列出（不猜）；无命中提示。普通输入框补全也会把 Ref 条目按 aliases 匹配出来。
+- 抓取只在 add 时发生，补全/展开不联网，避免输入时抖动。
+- 验证：test/target.test.ts 3 组（GitHub 规范化、DOI/arXiv/普通 URL、拒绝垃圾输入）；test/harness/ref-flow.mjs 验证 add/list/ref 唯一命中；test/match.test.ts 验证别名命中。
+
+不借：
+- 不做在线搜索/自动补全仓库名（会引入网络延迟与不确定性）；用户需要的是“把我记过的精确地址取回来”。
+- 不把引用放进项目配置（路径/URL 是本机知识），默认存全局 Ref 类目。

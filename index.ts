@@ -41,6 +41,7 @@ import { packageIdentity, rankPackages, rankTools, toolToken, type ToolLike } fr
 import { completionScores, emptyCompletionStats, parseCompletionStats, recordCompletion, type CompletionStats } from "./src/completions.ts";
 import { ALIAS_MACROS, aliasKeyValid, expandAlias, matchAliases, type AliasScript } from "./src/alias.ts";
 import { captureScreenshot, readClipboardImage, saveTempImage } from "./src/image.ts";
+import { parseTarget, rankTargets } from "./src/target.ts";
 import { checkUrl, enrichUrl } from "./src/enrich.ts";
 import {
   applyRemoteCompletion,
@@ -885,7 +886,7 @@ async function insertPath(ctx: ShelfCtx, kind: "dir" | "file") {
   ctx.ui.notify(`已插入 ${choice}`, "info");
 }
 
-async function upsert(layer: ShelfLayer, draft: { category: string; title: string; value: string; tags?: string[]; source?: Item["source"] }, scope: Scope, ctx?: ShelfCtx) {
+async function upsert(layer: ShelfLayer, draft: { category: string; title: string; value: string; tags?: string[]; aliases?: string[]; source?: Item["source"] }, scope: Scope, ctx?: ShelfCtx) {
   if (scope === "project" && isMachinePath(draft.value)) {
     scope = "global";
     ctx?.ui.notify("这是本机绝对路径，已改存到全局，不写入仓库。", "warning");
@@ -899,6 +900,7 @@ async function upsert(layer: ShelfLayer, draft: { category: string; title: strin
   if (existing) {
     existing.title = draft.title || existing.title;
     existing.tags = normTags([...(existing.tags ?? []), ...(draft.tags ?? [])]);
+    existing.aliases = [...new Set([...(existing.aliases ?? []), ...(draft.aliases ?? [])])];
     existing.updated = now();
     existing.source = draft.source ?? existing.source;
     await saveScope(layer, scope);
@@ -910,6 +912,7 @@ async function upsert(layer: ShelfLayer, draft: { category: string; title: strin
     title: draft.title.trim(),
     value: draft.value.trim(),
     tags: normTags(draft.tags ?? []),
+    aliases: [...new Set((draft.aliases ?? []).map((alias) => alias.trim()).filter(Boolean))],
     source: draft.source ?? "manual",
     uses: 0,
     created: now(),
@@ -1794,6 +1797,98 @@ async function manageAliases(ctx: ShelfCtx, pi: ExtensionAPI) {
   ctx.ui.notify(`已更新 ${key}`, "info");
 }
 
+
+function refRows(layer: ShelfLayer) {
+  return itemsOf(layer).filter((row) => row.category.toLowerCase() === "ref");
+}
+
+function refLabel(row: Row) {
+  return `${row.title}  →  ${row.value}`;
+}
+
+async function refFlow(ctx: ShelfCtx, layer: ShelfLayer, args: string) {
+  const [subWord, ...rest] = splitArgs(args.trim());
+  const sub = subWord?.toLowerCase();
+  if (!sub || sub === "list") {
+    const refs = refRows(layer);
+    if (!refs.length) {
+      ctx.ui.notify("还没有引用。用 /shelf ref add <url> 添加。", "info");
+      return;
+    }
+    ctx.ui.notify(refs.map(refLabel).join("\n"), "info");
+    return;
+  }
+  if (sub === "add") {
+    let input = rest.join(" ").trim();
+    if (!input) input = (await ctx.ui.input("仓库地址或 URL（例如 owner/repo 或 https://github.com/...）"))?.trim() ?? "";
+    if (!input) return;
+    const parsed = parseTarget(input);
+    if (!parsed) {
+      ctx.ui.notify("认不出这个地址。支持 owner/repo、GitHub URL、DOI、arXiv 或 http(s) URL。", "warning");
+      return;
+    }
+    if (parsed.kind === "github" || parsed.kind === "doi" || parsed.kind === "arxiv") {
+      try {
+        const enriched = await enrichUrl(parsed.value);
+        const item = await upsert(layer, {
+          category: "Ref",
+          title: parsed.label,
+          value: parsed.value,
+          tags: ["ref", parsed.kind, ...(enriched.tags ?? [])],
+          aliases: [...parsed.aliases, ...(enriched.title ? [enriched.title] : [])],
+        }, "global", ctx);
+        ctx.ui.notify(`已添加 ${item.title}  →  ${item.value}`, "info");
+        return;
+      } catch {
+        // metadata lookup is best effort; the exact URL is the important part
+      }
+    }
+    const item = await upsert(layer, {
+      category: "Ref",
+      title: parsed.label,
+      value: parsed.value,
+      tags: ["ref", parsed.kind],
+      aliases: parsed.aliases,
+    }, "global", ctx);
+    ctx.ui.notify(`已添加 ${item.title}  →  ${item.value}`, "info");
+    return;
+  }
+  if (sub === "rm" || sub === "delete" || sub === "remove") {
+    const refs = refRows(layer);
+    const list = choices(refs, refLabel);
+    const picked = list.pick(await ctx.ui.select("删除哪条引用", list.options));
+    if (!picked) return;
+    if (!(await confirmDestructive(ctx, `删除 ${picked.title}？`, "删除"))) return;
+    const scope = picked.scope ?? "global";
+    const bag = bagFor(layer, scope);
+    bag.items = bag.items.filter((item) => item.id !== picked.id);
+    await saveScope(layer, scope);
+    ctx.ui.notify(`已删除 ${picked.title}`, "info");
+    return;
+  }
+  // Anything else is a lookup: one exact hit inserts directly, several open a picker.
+  const queryText = [sub, ...rest].join(" ").trim();
+  const refs = refRows(layer);
+  const matched = rankRows(refs, queryText, 30);
+  const hits = rankTargets(refs, queryText, matched.map((hit) => hit.row));
+  if (!hits.length) {
+    ctx.ui.notify(`没有匹配的引用：${queryText}`, "warning");
+    return;
+  }
+  if (hits.length === 1) {
+    insertValue(ctx, hits[0]!.row.value);
+    await recordUse(layer, hits[0]!.row);
+    ctx.ui.notify(`已插入 ${hits[0]!.row.value}`, "info");
+    return;
+  }
+  const list = choices(hits.map((hit) => hit.row), refLabel);
+  const picked = list.pick(await ctx.ui.select(`选择引用（${hits.length}）`, list.options));
+  if (!picked) return;
+  insertValue(ctx, picked.value);
+  await recordUse(layer, picked);
+  ctx.ui.notify(`已插入 ${picked.value}`, "info");
+}
+
 async function pinDynamic(ctx: ShelfCtx) {
   const layer = await loadLayer(ctx.cwd ?? process.cwd());
   const dynamic = (await rows(ctx, layer, ctx.cwd ?? process.cwd())).filter((row) => row.dynamic);
@@ -1862,6 +1957,7 @@ const SHELF_ACTIONS = [
   { value: "trust", description: "批准项目文件（哈希）" },
   { value: "value", description: "管理变量 provider" },
   { value: "alias", description: "管理自定义展开（缩写→文本）" },
+  { value: "ref", description: "管理仓库/链接引用" },
   { value: "enrich", description: "抓取链接标题与标签" },
   { value: "check", description: "检查失效链接" },
   { value: "stats", description: "使用统计" },
@@ -2343,6 +2439,7 @@ export default function (pi: ExtensionAPI) {
       if (verb === "source") return manageSources(shelf);
       if (verb === "value") return manageValues(shelf);
       if (verb === "alias") return manageAliases(shelf, pi);
+      if (verb === "ref") return refFlow(shelf, layer, args.trim().replace(/^ref\b/i, "").trim());
       if (verb === "enrich") return enrichFlow(shelf);
       if (verb === "check") return checkFlow(shelf);
       if (verb === "stats") return statsFlow(shelf, layer);

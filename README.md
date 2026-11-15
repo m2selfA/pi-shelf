@@ -56,6 +56,7 @@ npm run typecheck  # tsc --noEmit，strict + noUncheckedIndexedAccess
 | 把输入框里的变量展开 | `/shelf fill` |
 | 变量候选来自命令 | `/shelf value`：模板写 `{{branch=@branches}}` |
 | 自定义展开 | `/shelf alias`：列出/新增/更改/删除缩写 |
+| 仓库/链接引用 | `/shelf ref`：模糊词展开成精确 URL |
 | 抓取链接标题/标签 | `/shelf enrich` |
 | 检查失效链接 | `/shelf check`，报告写 `diagnostics.json` |
 | 批准项目文件 | `/shelf trust`：文件哈希变了以后恢复项目命令 |
@@ -85,6 +86,24 @@ npm run typecheck  # tsc --noEmit，strict + noUncheckedIndexedAccess
 TUI 里 `/shelf` 和 `ctrl+shift+k` 打开单屏选择器：顶部输入框实时过滤，左边结果，右边完整条目（全文、标签、来源、变量名、使用次数）。`↑/↓` 选择、`Enter` 插入、`Esc` 取消；终端窄于 76 列时只显示列表。RPC 或没有自定义 UI 的环境自动退回原来的两段式对话框。
 
 `Tab` 可以标记多条，`Enter` 把它们按 `placement`（`prepend` / `append`）和 `order` 排好，中间空一行拼起来，先在编辑器里给一份可改的组合预览，再插入。没有 `order` 的条目按 0 排。
+
+### 仓库与链接引用
+
+存精确地址，用模糊词取回：
+
+```text
+/shelf ref add https://github.com/cryoem/eman2
+/shelf ref add 3dem/relion
+/shelf ref add 10.1038/s41592-024-02477-2
+/shelf ref eman          → 插入 https://github.com/cryoem/eman2
+/shelf ref list
+/shelf ref rm
+```
+
+- 输入可以很随意：完整 URL、`owner/repo`、带 `.git` 或 `/tree/main` 的地址，都会归一化成 `https://github.com/owner/repo`——这正是 GitHub MCP 与 API 认的形式；DOI 归一化成 `https://doi.org/...`，arXiv 归一化成 `https://arxiv.org/abs/<id>`。
+- 添加 GitHub/DOI/arXiv 时会顺带抓标题作为额外检索词（失败也不影响保存）。
+- 模糊词匹配标题、别名、标签和正文；命中唯一就直接插入，命中多条就列出来让你选，绝不猜。
+- 引用存在全局架子的 `Ref` 类目，不写进仓库文件。
 
 ### 自定义展开（缩写）
 

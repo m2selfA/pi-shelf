@@ -60,6 +60,13 @@ test("a short token does not fuzzy-match a long body", () => {
   assert.equal(rankRows([prompt], "analyzes").length, 1);
 });
 
+test("aliases are searched just below the title", () => {
+  const row: Row = { ...relion, id: "ref", category: "Ref", title: "cryoem/eman2", value: "https://github.com/cryoem/eman2", tags: ["ref"], aliases: ["eman", "eman2"] };
+  assert.equal(rankRows([row], "eman").length, 1);
+  assert.equal(rankRows([row], "cryoem").length, 1);
+  assert.equal(rankRows([row], "zzz").length, 0);
+});
+
 test("every query token must match, and usage breaks ties", () => {
   const base: Row = { ...relion, id: "a", category: "Note", title: "relion", value: "x", tags: [], uses: 0 };
   assert.equal(rankRows([base], "relion blurry").length, 0);

@@ -166,10 +166,12 @@
 实现：
 - `Rules.aliases` 存在全局 `config.json`；`/shelf alias` 提供列出、新增、更改、删除，值来源可选手动输入、工具名、收藏值；手动输入提示可用宏。
 - 缩写只在显式补全（Tab / `alt+/`）时参与，不会自动弹出；匹配精确优先，其次前缀；插入时替换 token 并补空格。
-- 宏集合是刻意收窄的安全子集：`{{date}}`、`{{time}}`、`{{datetime}}`、`{{clipboard}}`、`{{random:a|b}}`、`{{uuid}}`、`{{cursor}}`。未知宏（包括 shell 形式）保持字面量；不执行 shell 或 script。
+- 宏集合：`{{date}}`、`{{time}}`、`{{datetime}}`、`{{clipboard}}`、`{{clipboard-image}}`、`{{screenshot}}`、`{{env:NAME}}`、`{{random:a|b}}`、`{{uuid}}`、`{{cursor}}`。未知宏（包括 shell 形式）保持字面量；文本别名不执行 shell。
+- 图片宏沿用 Pi 原生 Ctrl+V 的做法：读取剪贴板/截图后写入临时 PNG，再把路径作为展开文本插入；不伪造图片 base64。截图在候选构建时启动，取消则返回空候选。
+- 脚本别名是显式类型：AI 用 `ctx.modelRegistry.complete()` 生成脚本，用户在编辑器确认后才保存；展开时通过 `shellPlan` 执行脚本并插入 stdout。脚本是本地可执行内容，不属于“文本宏”。
 - `{{cursor}}` 通过 `applyRemoteCompletion` 的可选 `cursorOffset` 定位光标；同一值多个 cursor 只保留第一个。
 - 频率统计同样记录缩写接受（key 为缩写前缀），因此常用的缩写或工具会在同层排序靠前。
-- 验证：`test/alias.test.ts` 6 组（日期/时间、clipboard 缺失、cursor、random、未知宏/合法 key、匹配）；`test/harness/alias-completion.mjs` 用真实 provider 验证不自动弹出、Tab 展开、路径、宏、cursor；`test/harness/alias-manage.mjs` 用假 UI 验证增/列/改/删。
+- 验证：`test/alias.test.ts` 8 组（日期/时间、clipboard 缺失、cursor、random、未知宏/合法 key、匹配）；`test/harness/alias-completion.mjs` 用真实 provider 验证不自动弹出、Tab 展开、路径、宏、cursor；`test/harness/alias-manage.mjs` 用假 UI 验证增/列/改/删。
 
 不借：
 - Espanso/TextExpander 的 shell/script 宏：缩写是纯文本，执行命令应走已有的 value provider（受项目信任与哈希门禁），不混进缩写。

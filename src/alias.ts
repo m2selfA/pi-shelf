@@ -1,18 +1,22 @@
 import { randomUUID } from "node:crypto";
 
-export type Alias = { key: string; value: string; description?: string };
+export type AliasScript = { language: "powershell" | "bash"; source: string; purpose: string };
+export type Alias = { key: string; value: string; description?: string; script?: AliasScript };
 export type AliasContext = {
   now?: Date;
   clipboard?: string;
+  clipboardImage?: string;
+  screenshot?: string;
+  env?: Record<string, string | undefined>;
   uuid?: () => string;
   random?: () => number;
 };
 export type ExpandedAlias = { text: string; cursorOffset?: number };
 
 /** Shown in the add/edit dialog. Unknown macros are left untouched. */
-export const ALIAS_MACROS = "{{date}} {{time}} {{datetime}} {{clipboard}} {{random:a|b}} {{cursor}}";
+export const ALIAS_MACROS = "{{date}} {{time}} {{datetime}} {{clipboard}} {{clipboard-image}} {{screenshot}} {{env:NAME}} {{random:a|b}} {{cursor}}";
 
-const MACRO = /\{\{\s*([A-Za-z]+)(?::([^{}]*))?\s*\}\}/g;
+const MACRO = /\{\{\s*([A-Za-z][A-Za-z-]*)(?::([^{}]*))?\s*\}\}/g;
 
 function pad(value: number) {
   return String(value).padStart(2, "0");
@@ -42,6 +46,13 @@ export function expandAlias(value: string, context: AliasContext = {}): Expanded
     if (name === "time") return formatTime(now);
     if (name === "datetime") return `${formatDate(now)} ${formatTime(now)}`;
     if (name === "clipboard") return context.clipboard === undefined ? full : context.clipboard;
+    if (name === "clipboard-image") return context.clipboardImage === undefined ? full : context.clipboardImage;
+    if (name === "screenshot") return context.screenshot === undefined ? full : context.screenshot;
+    if (name === "env") {
+      const key = (rawArg ?? "").trim();
+      const value = key ? (context.env ?? process.env)[key] : undefined;
+      return value === undefined ? full : value;
+    }
     if (name === "uuid") return (context.uuid ?? randomUUID)();
     if (name === "random") {
       const choices = (rawArg ?? "").split("|").map((choice) => choice.trim()).filter(Boolean);

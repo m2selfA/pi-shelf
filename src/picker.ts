@@ -126,6 +126,16 @@ export function createPicker(
     tui.requestRender();
   };
 
+  const page = (direction: number) => {
+    if (!state.filtered.length) return;
+    // A page is one visible window minus the row kept for context.
+    const step = Math.max(1, MAX_VISIBLE - 1);
+    const next = Math.max(0, Math.min(state.filtered.length - 1, state.selected + direction * step));
+    state.selected = next;
+    state.list.setSelectedIndex(next);
+    tui.requestRender();
+  };
+
   return {
     // Focusing the filter box hands the terminal cursor to it; without this the input
     // renders a fake block cursor instead of the real one.
@@ -160,12 +170,9 @@ export function createPicker(
       if (keybindings.matches(data, "tui.select.confirm")) {
         return finish(collect());
       }
-      if (
-        keybindings.matches(data, "tui.select.up") ||
-        keybindings.matches(data, "tui.select.down") ||
-        keybindings.matches(data, "tui.select.pageUp") ||
-        keybindings.matches(data, "tui.select.pageDown")
-      ) {
+      if (keybindings.matches(data, "tui.select.pageUp")) return page(-1);
+      if (keybindings.matches(data, "tui.select.pageDown")) return page(1);
+      if (keybindings.matches(data, "tui.select.up") || keybindings.matches(data, "tui.select.down")) {
         return move(data);
       }
       input.handleInput(data);

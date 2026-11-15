@@ -25,6 +25,16 @@ test("random picks from the supplied choices", () => {
   assert.equal(expandAlias("{{random:red|green}}", { now, random: () => 0 }).text, "red");
 });
 
+test("environment variables expand and missing ones stay literal", () => {
+  assert.equal(expandAlias("home={{env:HOME}}", { now, env: { HOME: "/home/me" } }).text, "home=/home/me");
+  assert.equal(expandAlias("missing={{env:NOPE}}", { now, env: {} }).text, "missing={{env:NOPE}}");
+});
+
+test("image paths from clipboard or screenshot expand as text", () => {
+  assert.equal(expandAlias("{{clipboard-image}} {{screenshot}}", { now, clipboardImage: "/tmp/a.png", screenshot: "/tmp/s.png" }).text, "/tmp/a.png /tmp/s.png");
+  assert.equal(expandAlias("{{clipboard-image}}", { now }).text, "{{clipboard-image}}");
+});
+
 test("unknown macros stay literal and keys are validated", () => {
   assert.equal(expandAlias("{{shell:rm -rf /}}", { now }).text, "{{shell:rm -rf /}}");
   assert.equal(aliasKeyValid("ws"), true);

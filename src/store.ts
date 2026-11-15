@@ -4,9 +4,10 @@ import type { Item, TopicDef } from "./match.ts";
 export type Scope = "global" | "project";
 export type DynamicSource = { id: string; category: string; tags: string[]; command: string };
 /** A named command whose stdout lines become candidates for a {{name=@id}} slot. */
+import type { Alias } from "./alias.ts";
+export type { Alias } from "./alias.ts";
 export type ValueProvider = { id: string; command: string; label?: string };
-/** A user-defined abbreviation: typing the key + Tab expands to value. */
-export type Alias = { key: string; value: string; description?: string };
+/** A user-defined abbreviation: typing the key + Tab expands to value or a script. */
 export type Collection = { version: 2; items: Item[]; archive: Item[] };
 export type Rules = { version: 1; topics: TopicDef[]; sources: DynamicSource[]; values: ValueProvider[]; aliases: Alias[] };
 export type ProjectShelf = {

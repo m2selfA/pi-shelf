@@ -23,6 +23,16 @@ await writeFile(join(dir, "config.json"), JSON.stringify({
     { key: "xb", value: "D:/opt/scoop/buckets/xhark/bucket" },
     { key: "dt", value: "today={{date}}" },
     { key: "cur", value: "hello {{cursor}}world" },
+    { key: "envx", value: "{{env:PI_SHELF_TEST_ENV}}" },
+    {
+      key: "br",
+      value: "",
+      script: {
+        language: process.platform === "win32" ? "powershell" : "bash",
+        source: process.platform === "win32" ? "Write-Output hello-from-script" : "echo hello-from-script",
+        purpose: "test",
+      },
+    },
   ],
 }, null, 2));
 
@@ -63,6 +73,16 @@ assert.equal(xb[0].value, "D:/opt/scoop/buckets/xhark/bucket");
 
 const dt = await suggest("use dt", true);
 assert.match(dt[0].value, /^today=\d{4}-\d{2}-\d{2}$/);
+
+process.env.PI_SHELF_TEST_ENV = "env-value";
+const envAlias = await suggest("use envx", true);
+assert.equal(envAlias[0].value, "env-value");
+process.env.PI_SHELF_TEST_ENV = undefined;
+
+const scriptAlias = await suggest("use br", true);
+assert.equal(scriptAlias[0].value, "", "a script is not executed just by listing it");
+const scriptApplied = provider.applyCompletion(["use br"], 0, 6, scriptAlias[0], "br");
+assert.equal(scriptApplied.lines[0], "use hello-from-script ", "selecting the script row executes it");
 
 const cur = await suggest("use cur", true);
 const cursorApplied = provider.applyCompletion(["use cur"], 0, 7, cur[0], "cur");

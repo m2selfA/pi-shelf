@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { mkdir, readdir, readFile, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises";
@@ -39,7 +39,8 @@ import { composeParts, type Part } from "./src/compose.ts";
 import { expandShortcuts } from "./src/shortcut.ts";
 import { packageIdentity, rankPackages, rankTools, toolToken, type ToolLike } from "./src/tools.ts";
 import { completionScores, emptyCompletionStats, parseCompletionStats, recordCompletion, type CompletionStats } from "./src/completions.ts";
-import { ALIAS_MACROS, aliasKeyValid, expandAlias, matchAliases } from "./src/alias.ts";
+import { ALIAS_MACROS, aliasKeyValid, expandAlias, matchAliases, type AliasScript } from "./src/alias.ts";
+import { captureScreenshot, readClipboardImage, saveTempImage } from "./src/image.ts";
 import { checkUrl, enrichUrl } from "./src/enrich.ts";
 import {
   applyRemoteCompletion,
@@ -80,6 +81,22 @@ import {
 } from "./src/store.ts";
 
 const execFileAsync = promisify(execFile);
+
+function runAliasScriptSync(script: AliasScript, cwd: string): string {
+  const prefix = script.language === "bash" ? "bash:" : "powershell:";
+  const calls = shellPlan(process.platform, `${prefix} ${script.source}`, cwd);
+  if (!calls.length) throw new Error("脚本为空。");
+  let lastError: unknown;
+  for (const call of calls) {
+    try {
+      const stdout = execFileSync(call.command, call.args, { cwd, timeout: 15_000, maxBuffer: 4 * 1024 * 1024, encoding: "utf8" });
+      return stdout.replace(/\r\n/g, "\n").replace(/\n$/, "");
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+}
 
 let clipboardCache: { at: number; value: string | undefined } | undefined;
 /** Read the system clipboard once per second; undefined means "leave {{clipboard}} literal". */
@@ -1607,14 +1624,65 @@ async function statsFlow(ctx: ShelfCtx, layer: ShelfLayer) {
 }
 
 
+type AliasDraft = { value: string; script?: AliasScript };
+
 function aliasSummary(alias: Alias) {
+  if (alias.script) return `${alias.key} → [脚本] ${alias.script.purpose}`;
   const flat = alias.value.replace(/\s+/g, " ").trim();
   return `${alias.key} → ${flat.length > 80 ? flat.slice(0, 79) + "…" : flat}`;
 }
 
-async function askAliasValue(ctx: ShelfCtx, layer: ShelfLayer, pi: ExtensionAPI, prefill = ""): Promise<string | undefined> {
-  const source = await ctx.ui.select("展开内容来源", ["手动输入（支持宏）", "从工具名选", "从收藏值选"]);
+function stripCodeFence(text: string) {
+  const fence = text.match(/^\s*```[A-Za-z]*\n([\s\S]*?)\n```\s*$/);
+  return fence?.[1]?.trim() ?? text.trim();
+}
+
+async function generateAliasScript(ctx: ShelfCtx, purpose: string): Promise<string | undefined> {
+  const runtime = (ctx as unknown as {
+    model?: unknown;
+    modelRegistry?: { complete?: (model: unknown, context: unknown, options?: unknown) => Promise<{ content?: Array<{ type: string; text?: string }> }> };
+  });
+  if (!runtime.model || !runtime.modelRegistry?.complete) {
+    ctx.ui.notify("当前会话没有可用的模型运行时，无法生成脚本。", "error");
+    return undefined;
+  }
+  const language = process.platform === "win32" ? "PowerShell" : "bash";
+  try {
+    const response = await runtime.modelRegistry.complete(
+      runtime.model,
+      {
+        systemPrompt: `You write short ${language} scripts for a developer terminal. Output only the script, no markdown fences or commentary. The script runs in the project cwd and its stdout becomes inserted text.`,
+        messages: [{ role: "user", content: [{ type: "text", text: purpose }], timestamp: Date.now() }],
+      },
+      { signal: AbortSignal.timeout(60_000) },
+    );
+    const text = (response.content ?? []).filter((item) => item.type === "text").map((item) => item.text ?? "").join("\n");
+    if (!text.trim()) {
+      ctx.ui.notify("模型没有返回脚本。", "warning");
+      return undefined;
+    }
+    return stripCodeFence(text);
+  } catch (error) {
+    ctx.ui.notify(`生成脚本失败：${(error as Error).message.slice(0, 120)}`, "error");
+    return undefined;
+  }
+}
+
+async function askAliasValue(ctx: ShelfCtx, layer: ShelfLayer, pi: ExtensionAPI, prefill = ""): Promise<AliasDraft | undefined> {
+  const source = await ctx.ui.select("展开内容来源", ["手动输入（支持宏）", "从工具名选", "从收藏值选", "脚本（AI 生成）"]);
   if (!source) return undefined;
+  if (source === "脚本（AI 生成）") {
+    const purpose = await ctx.ui.editor?.("脚本目的（AI 生成后，展开时执行）", "");
+    if (!purpose?.trim()) return undefined;
+    const generated = await generateAliasScript(ctx, purpose.trim());
+    if (generated === undefined) return undefined;
+    const reviewed = await ctx.ui.editor?.("生成的脚本（可修改；展开时执行，stdout 作为展开文本）", generated);
+    if (reviewed == null || !reviewed.trim()) return undefined;
+    return {
+      value: "",
+      script: { language: process.platform === "win32" ? "powershell" : "bash", source: reviewed, purpose: purpose.trim() },
+    };
+  }
   if (source === "从工具名选") {
     const api = pi as ExtensionAPI & { getAllTools?: () => ToolLike[] };
     const tools = typeof api.getAllTools === "function" ? api.getAllTools().filter((tool) => tool.exposure !== "hidden") : [];
@@ -1622,8 +1690,26 @@ async function askAliasValue(ctx: ShelfCtx, layer: ShelfLayer, pi: ExtensionAPI,
       ctx.ui.notify("当前没有可选的工具。", "warning");
       return undefined;
     }
+    if (ctx.mode === "tui" && ctx.ui.custom) {
+      const rows: Row[] = tools.map((tool, index) => ({
+        id: `tool:${tool.name}:${index}`,
+        category: "工具",
+        title: tool.name,
+        value: tool.name,
+        tags: tool.sourceInfo?.source === "builtin" ? ["内置"] : [],
+        source: "manual",
+        uses: 0,
+        created: "",
+        updated: "",
+        dynamic: true,
+      }));
+      const selected = await ctx.ui.custom<Row[]>((tui, theme, _keybindings, done) =>
+        createPicker(tui, theme, { rows, initial: "", multi: false }, done),
+      );
+      return selected[0]?.value ? { value: selected[0].value } : undefined;
+    }
     const picked = await ctx.ui.select("选择工具名", tools.map((tool) => tool.name).sort());
-    return picked;
+    return picked ? { value: picked } : undefined;
   }
   if (source === "从收藏值选") {
     const entries = itemsOf(layer);
@@ -1632,7 +1718,8 @@ async function askAliasValue(ctx: ShelfCtx, layer: ShelfLayer, pi: ExtensionAPI,
       return undefined;
     }
     const list = choices(entries, (item) => `@${item.category}  ${item.title}`);
-    return list.pick(await ctx.ui.select("选择收藏值", list.options))?.value;
+    const picked = list.pick(await ctx.ui.select("选择收藏值", list.options));
+    return picked ? { value: picked.value } : undefined;
   }
   const entered = await ctx.ui.editor?.(`展开内容（可多行）。支持宏：${ALIAS_MACROS}`, prefill);
   if (entered == null) return undefined;
@@ -1640,7 +1727,7 @@ async function askAliasValue(ctx: ShelfCtx, layer: ShelfLayer, pi: ExtensionAPI,
     ctx.ui.notify("展开内容不能为空。", "warning");
     return undefined;
   }
-  return entered;
+  return { value: entered };
 }
 
 async function manageAliases(ctx: ShelfCtx, pi: ExtensionAPI) {
@@ -1664,12 +1751,13 @@ async function manageAliases(ctx: ShelfCtx, pi: ExtensionAPI) {
     if (aliases.some((alias) => alias.key.toLowerCase() === key.toLowerCase())) {
       if (!(await confirmDestructive(ctx, `${key} 已存在，覆盖它？`, "覆盖"))) return;
     }
-    const value = await askAliasValue(ctx, layer, pi);
-    if (value === undefined) return;
-    layer.rules.aliases = [...aliases.filter((alias) => alias.key.toLowerCase() !== key.toLowerCase()), { key, value }];
+    const draft = await askAliasValue(ctx, layer, pi);
+    if (!draft) return;
+    const alias: Alias = { key, value: draft.value, script: draft.script };
+    layer.rules.aliases = [...aliases.filter((item) => item.key.toLowerCase() !== key.toLowerCase()), alias];
     await saveRules(layer.rules);
-    const preview = expandAlias(value, { clipboard: await readClipboard() }).text;
-    ctx.ui.notify(`已添加 ${aliasSummary({ key, value: preview })}`, "info");
+    const preview = draft.script ? `[脚本] ${draft.script.purpose}` : expandAlias(draft.value, { clipboard: await readClipboard() }).text;
+    ctx.ui.notify(`已添加 ${aliasSummary({ ...alias, value: preview })}`, "info");
     return;
   }
   if (!aliases.length) {
@@ -1696,11 +1784,11 @@ async function manageAliases(ctx: ShelfCtx, pi: ExtensionAPI) {
     ctx.ui.notify(`${key} 已经被另一条缩写使用。`, "warning");
     return;
   }
-  const value = await askAliasValue(ctx, layer, pi, picked.value);
-  if (value === undefined) return;
+  const draft = await askAliasValue(ctx, layer, pi, picked.script?.source ?? picked.value);
+  if (!draft) return;
   layer.rules.aliases = [
     ...aliases.filter((alias, index) => index !== picked.index && alias.key.toLowerCase() !== key.toLowerCase()),
-    { key, value },
+    { key, value: draft.value, script: draft.script },
   ];
   await saveRules(layer.rules);
   ctx.ui.notify(`已更新 ${key}`, "info");
@@ -1722,7 +1810,7 @@ async function pinDynamic(ctx: ShelfCtx) {
   ctx.ui.notify(`已钉住 ${row.title}`, "info");
 }
 
-type CompleteItem = { value: string; label: string; description?: string; shelfKind?: "shelf" | "remote" | "tool" | "package" | "alias"; cursorOffset?: number };
+type CompleteItem = { value: string; label: string; description?: string; shelfKind?: "shelf" | "remote" | "tool" | "package" | "alias" | "script"; cursorOffset?: number; script?: AliasScript };
 
 /** "-" and "_" are equivalent when deciding whether a candidate is a prefix hit. */
 function sameStem(value: string, prefix: string) {
@@ -1883,6 +1971,7 @@ async function loadCompletionStats(): Promise<CompletionStats> {
 
 function installAutocomplete(pi: ExtensionAPI) {
   let completionStats = emptyCompletionStats();
+  let completionCtx: ShelfCtx | undefined;
   let flushTimer: ReturnType<typeof setTimeout> | undefined;
   const scheduleCompletionSave = () => {
     if (flushTimer) clearTimeout(flushTimer);
@@ -1930,7 +2019,7 @@ function installAutocomplete(pi: ExtensionAPI) {
       ? { ...tool, packageName: identity.name, packageFullName: identity.fullName, packageAliases: identity.aliases }
       : tool;
   };
-  const aliasCandidates = async (prefix: string): Promise<CompleteItem[]> => {
+  const aliasCandidates = async (ctx: ShelfCtx, prefix: string): Promise<CompleteItem[]> => {
     // Aliases are global rules, so a config read is enough; do not pay the git calls of
     // loadLayer on every Tab in an unrelated directory.
     const rules = await readRules();
@@ -1938,18 +2027,53 @@ function installAutocomplete(pi: ExtensionAPI) {
     if (!matches.length) return [];
     // Only touch the OS clipboard when an alias actually uses the macro; otherwise a
     // short alias list would pay a PowerShell/pbpaste round-trip on every Tab.
-    const clipboard = matches.some(({ alias }) => alias.value.includes("{{clipboard}}")) ? await readClipboard() : undefined;
-    return matches.map(({ alias }) => {
-      const expanded = expandAlias(alias.value, { clipboard });
+    const needsClipboard = matches.some(({ alias }) => alias.value.includes("{{clipboard}}"));
+    const needsClipboardImage = matches.some(({ alias }) => alias.value.includes("{{clipboard-image}}"));
+    const needsScreenshot = matches.some(({ alias }) => alias.value.includes("{{screenshot}}"));
+    const clipboard = needsClipboard ? await readClipboard() : undefined;
+    let clipboardImage: string | undefined;
+    if (needsClipboardImage) {
+      const image = await readClipboardImage();
+      if (!image) {
+        ctx.ui.notify("剪贴板里没有图片。", "warning");
+        return [];
+      }
+      clipboardImage = await saveTempImage(image);
+    }
+    let screenshot: string | undefined;
+    if (needsScreenshot) {
+      const captured = await captureScreenshot();
+      if (!captured) {
+        ctx.ui.notify("截图取消或失败。", "warning");
+        return [];
+      }
+      screenshot = captured;
+    }
+    const items: CompleteItem[] = [];
+    for (const { alias } of matches) {
+      if (alias.script) {
+        // Do not execute while merely listing candidates: the script runs only when the
+        // user actually accepts this row (applyCompletion is synchronous).
+        items.push({
+          value: "",
+          label: `${alias.key} → [脚本] ${alias.script.purpose.slice(0, 40)}`,
+          description: "脚本展开 · 选中后执行",
+          shelfKind: "script" as const,
+          script: alias.script,
+        });
+        continue;
+      }
+      const expanded = expandAlias(alias.value, { clipboard, clipboardImage, screenshot, env: process.env });
       const flat = expanded.text.replace(/\s+/g, " ").trim();
-      return {
+      items.push({
         value: expanded.text,
         label: `${alias.key} → ${flat.length > 44 ? flat.slice(0, 43) + "…" : flat}`,
         description: `自定义展开${expanded.cursorOffset !== undefined ? " · 光标定位" : ""}`,
         shelfKind: "alias" as const,
         cursorOffset: expanded.cursorOffset,
-      };
-    });
+      });
+    }
+    return items;
   };
   const toolCandidates = (prefix: string): { tools: CompleteItem[]; packages: CompleteItem[] } => {
     const api = pi as ExtensionAPI & { getAllTools?: () => ToolLike[]; getActiveTools?: () => string[] };
@@ -1977,6 +2101,7 @@ function installAutocomplete(pi: ExtensionAPI) {
     }
   };
   pi.on("session_start", async (_event, ctx) => {
+    completionCtx = ctx as ShelfCtx;
     completionStats = await loadCompletionStats();
     const known = await readSshHosts();
     const ui = ctx.ui as ShelfUi & {
@@ -2041,7 +2166,7 @@ function installAutocomplete(pi: ExtensionAPI) {
         if (options.force === true) {
           const aliasPrefix = draftSeed(before);
           if (/^[A-Za-z0-9_.:-]{2,32}$/.test(aliasPrefix)) {
-            const aliasItems = await aliasCandidates(aliasPrefix);
+            const aliasItems = await aliasCandidates(ctx as ShelfCtx, aliasPrefix);
             if (aliasItems.length) {
               let native: { items: CompleteItem[]; prefix: string } | null = null;
               try {
@@ -2113,6 +2238,21 @@ function installAutocomplete(pi: ExtensionAPI) {
         const marked = item as CompletionMeta & { shelfKind?: string };
         // A tool name replaces the typed fragment and adds one space, the same rule the
         // shelf/remote insertions use.
+        if (marked.shelfKind === "script" && item.script) {
+          try {
+            const output = runAliasScriptSync(item.script, completionCtx?.cwd ?? process.cwd());
+            if (!output.trim()) {
+              completionCtx?.ui.notify("脚本没有输出，未插入。", "warning");
+              return { lines, cursorLine, cursorCol };
+            }
+            recordCompletion(completionStats, prefix, output);
+            scheduleCompletionSave();
+            return applyRemoteCompletion(lines, cursorLine, cursorCol, output, prefix, false);
+          } catch (error) {
+            completionCtx?.ui.notify(`脚本运行失败：${(error as Error).message.slice(0, 120)}`, "error");
+            return { lines, cursorLine, cursorCol };
+          }
+        }
         if (marked.shelfKind === "alias") {
           recordCompletion(completionStats, prefix, item.value);
           scheduleCompletionSave();

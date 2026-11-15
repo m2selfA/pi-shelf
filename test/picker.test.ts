@@ -55,6 +55,26 @@ test("Tab marks rows and Enter inserts them together", () => {
   assert.deepEqual(result.map((row) => row.id), ["a", "c"]);
 });
 
+test("PageDown and PageUp move by one visible window", () => {
+  const many: Row[] = Array.from({ length: 30 }, (_, index) => ({
+    ...rows[0]!,
+    id: `r${index}`,
+    title: `row-${String(index).padStart(2, "0")}`,
+    value: `value-${index}`,
+    uses: 0,
+  }));
+  let result: Row[] = [];
+  const picker = createPicker(tui, theme, { rows: many, multi: false }, (picked) => { result = picked; });
+  picker.handleInput("\x1b[6~");
+  picker.handleInput("\r");
+  assert.equal(result[0]?.id, "r9", "PageDown jumps one window minus one row");
+  const back = createPicker(tui, theme, { rows: many, multi: false }, (picked) => { result = picked; });
+  back.handleInput("\x1b[6~");
+  back.handleInput("\x1b[5~");
+  back.handleInput("\r");
+  assert.equal(result[0]?.id, "r0", "PageUp returns to the previous window");
+});
+
 test("Tab is ignored when multi-select is off", () => {
   let result: Row[] = [];
   const picker = createPicker(tui, theme, { rows, multi: false }, (picked) => { result = picked; });

@@ -34,12 +34,13 @@ const ctx = { ui, mode: "rpc", cwd: process.cwd(), sessionManager: { getEntries:
 await shelf.handler("ref add https://github.com/cryoem/eman2", ctx);
 await shelf.handler("ref add 3dem/relion", ctx);
 await shelf.handler("ref add earendil-works/pi", ctx);
-await shelf.handler("ref add https://github.com/3dem/relion --alias rel --aliases rel5", ctx);
+await shelf.handler("ref add https://github.com/3dem/relion --alias rel --aliases rel5 --description 'Cryo-EM refinement pipeline'", ctx);
 
 notes.length = 0;
 await shelf.handler("ref list", ctx);
 assert.match(notes.at(-1), /cryoem\/eman2.*https:\/\/github\.com\/cryoem\/eman2/);
 assert.match(notes.at(-1), /3dem\/relion/);
+assert.match(notes.at(-1), /Cryo-EM refinement pipeline/);
 
 await shelf.handler("ref cryo", ctx);
 assert.equal(inserted.at(-1), "https://github.com/cryoem/eman2");

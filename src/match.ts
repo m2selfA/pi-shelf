@@ -19,6 +19,8 @@ export type Item = {
   order?: number;
   /** Short names/acronyms used only for fuzzy lookup (eman, relion). */
   aliases?: string[];
+  /** Human description shown when picking a reference. */
+  description?: string;
 };
 
 export type Row = Item & { dynamic?: boolean; scope?: "global" | "project" };

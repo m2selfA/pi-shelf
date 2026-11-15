@@ -886,7 +886,7 @@ async function insertPath(ctx: ShelfCtx, kind: "dir" | "file") {
   ctx.ui.notify(`已插入 ${choice}`, "info");
 }
 
-async function upsert(layer: ShelfLayer, draft: { category: string; title: string; value: string; tags?: string[]; aliases?: string[]; source?: Item["source"] }, scope: Scope, ctx?: ShelfCtx) {
+async function upsert(layer: ShelfLayer, draft: { category: string; title: string; value: string; tags?: string[]; aliases?: string[]; description?: string; source?: Item["source"] }, scope: Scope, ctx?: ShelfCtx) {
   if (scope === "project" && isMachinePath(draft.value)) {
     scope = "global";
     ctx?.ui.notify("这是本机绝对路径，已改存到全局，不写入仓库。", "warning");
@@ -901,6 +901,7 @@ async function upsert(layer: ShelfLayer, draft: { category: string; title: strin
     existing.title = draft.title || existing.title;
     existing.tags = normTags([...(existing.tags ?? []), ...(draft.tags ?? [])]);
     existing.aliases = [...new Set([...(existing.aliases ?? []), ...(draft.aliases ?? [])])];
+    existing.description = draft.description ?? existing.description;
     existing.updated = now();
     existing.source = draft.source ?? existing.source;
     await saveScope(layer, scope);
@@ -913,6 +914,7 @@ async function upsert(layer: ShelfLayer, draft: { category: string; title: strin
     value: draft.value.trim(),
     tags: normTags(draft.tags ?? []),
     aliases: [...new Set((draft.aliases ?? []).map((alias) => alias.trim()).filter(Boolean))],
+    description: draft.description?.trim() || undefined,
     source: draft.source ?? "manual",
     uses: 0,
     created: now(),
@@ -1798,20 +1800,165 @@ async function manageAliases(ctx: ShelfCtx, pi: ExtensionAPI) {
 }
 
 
+
+type ToolExecutor = (name: string, args: unknown) => Promise<{ isError?: boolean; content?: Array<{ type: string; text?: string }> }>;
+
+function toolExecutor(ctx: ShelfCtx): ToolExecutor | undefined {
+  const execute = (ctx as unknown as { executeTool?: ToolExecutor }).executeTool;
+  return typeof execute === "function" ? execute.bind(ctx) : undefined;
+}
+
+function toolText(result: { content?: Array<{ type: string; text?: string }> } | undefined) {
+  return (result?.content ?? []).filter((item) => item.type === "text").map((item) => item.text ?? "").join("\n");
+}
+
+function findDescription(value: unknown, depth = 0): string | undefined {
+  if (depth > 5 || value == null) return undefined;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findDescription(item, depth + 1);
+      if (found) return found;
+    }
+    return undefined;
+  }
+  if (typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const direct = record.description;
+    if (typeof direct === "string" && direct.trim()) return direct.trim();
+    for (const child of Object.values(record)) {
+      const found = findDescription(child, depth + 1);
+      if (found) return found;
+    }
+    return undefined;
+  }
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      return findDescription(parsed, depth + 1);
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+async function summarizeText(ctx: ShelfCtx, text: string): Promise<string | undefined> {
+  const runtime = ctx as unknown as { model?: unknown; modelRegistry?: { complete?: (model: unknown, context: unknown, options?: unknown) => Promise<{ content?: Array<{ type: string; text?: string }> }> } };
+  if (!runtime.modelRegistry?.complete || !runtime.model) return text.split(/\n+/).find((line) => line.trim())?.trim().slice(0, 240);
+  try {
+    const response = await runtime.modelRegistry.complete(
+      runtime.model,
+      {
+        systemPrompt: "Summarize the GitHub repository information into one concise English sentence (max 30 words). Return only that sentence, no markdown.",
+        messages: [{ role: "user", content: [{ type: "text", text: text.slice(0, 8000) }], timestamp: Date.now() }],
+      },
+      { signal: AbortSignal.timeout(45_000) },
+    );
+    return (response.content ?? []).filter((item) => item.type === "text").map((item) => item.text ?? "").join(" ").trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Description lookup order: GitHub MCP (when the caller has a tool context) -> GitHub
+ * API/page metadata -> web search -> one-sentence summary. Commands do not receive
+ * executeTool, so the command path naturally uses the API; the shelf tool action has the
+ * MCP/web path.
+ */
+async function describeRef(ctx: ShelfCtx, pi: ExtensionAPI, row: Row): Promise<string | undefined> {
+  const parsed = parseTarget(row.value);
+  if (!parsed) return undefined;
+  const execute = toolExecutor(ctx);
+  if (parsed.kind === "github") {
+    const [owner, repo] = parsed.label.split("/");
+    if (execute && owner && repo) {
+      const api = pi as ExtensionAPI & { getAllTools?: () => ToolLike[] };
+      const names = (typeof api.getAllTools === "function" ? api.getAllTools() : []).map((tool) => tool.name);
+      const githubTools = names.filter((name) => name.toLowerCase().startsWith("mcp__github__"));
+      const searchTool = githubTools.find((name) => /search_repositor|repositor/i.test(name));
+      const getTool = githubTools.find((name) => /get_repository|repository/i.test(name));
+      for (const [name, args] of [
+        ...(searchTool ? [[searchTool, { query: `repo:${owner}/${repo}` }]] : []),
+        ...(getTool ? [[getTool, { owner, repo }]] : []),
+        ...(searchTool ? [[searchTool, { query: `${owner}/${repo}` }]] : []),
+      ] as Array<[string, unknown]>) {
+        try {
+          const result = await execute(name, args);
+          if (!result?.isError) {
+            const description = findDescription(toolText(result));
+            if (description) return description;
+          }
+        } catch {
+          // try the next shape
+        }
+      }
+    }
+    try {
+      const enriched = await enrichUrl(row.value);
+      if (enriched.description?.trim()) return enriched.description.trim();
+      if (enriched.title?.trim()) return enriched.title.trim();
+    } catch {
+      // web fallback below
+    }
+  } else {
+    try {
+      const enriched = await enrichUrl(row.value);
+      if (enriched.description?.trim()) return enriched.description.trim();
+      if (enriched.title?.trim()) return enriched.title.trim();
+    } catch {
+      // web fallback below
+    }
+  }
+  if (execute) {
+    const api = pi as ExtensionAPI & { getAllTools?: () => ToolLike[] };
+    const names = (typeof api.getAllTools === "function" ? api.getAllTools() : []).map((tool) => tool.name);
+    const webTool = names.find((name) => /^(web_search|fused_search|adaptive_search|search)$/i.test(name))
+      ?? names.find((name) => /^mcp__.*search/i.test(name));
+    if (webTool) {
+      try {
+        const result = await execute(webTool, { query: `${row.title} ${row.value} GitHub repository description` });
+        if (!result?.isError) {
+          const text = toolText(result);
+          if (text.trim()) return summarizeText(ctx, text);
+        }
+      } catch {
+        // no description available
+      }
+    }
+  }
+  return undefined;
+}
+
 function refRows(layer: ShelfLayer) {
   return itemsOf(layer).filter((row) => row.category.toLowerCase() === "ref");
 }
 
 function refLabel(row: Row) {
   const aliases = row.aliases?.length ? `  [${row.aliases.slice(0, 4).join(", ")}]` : "";
-  return `${row.title}  →  ${row.value}${aliases}`;
+  const description = row.description ? `  —  ${row.description.length > 60 ? row.description.slice(0, 59) + "…" : row.description}` : "";
+  return `${row.title}  →  ${row.value}${description}${aliases}`;
 }
 
 function splitAliasArgs(tokens: string[]) {
   const input: string[] = [];
   const aliases: string[] = [];
+  let description = "";
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index]!;
+    if (token === "--description" || token === "--desc") {
+      description = tokens[index + 1] ?? "";
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("--description=")) {
+      description = token.slice("--description=".length);
+      continue;
+    }
+    if (token.startsWith("--desc=")) {
+      description = token.slice("--desc=".length);
+      continue;
+    }
     if (token === "--alias" || token === "--aliases") {
       const value = tokens[index + 1] ?? "";
       aliases.push(...value.split(","));
@@ -1829,10 +1976,14 @@ function splitAliasArgs(tokens: string[]) {
     if (token.startsWith("--")) continue;
     input.push(token);
   }
-  return { input: input.join(" ").trim(), aliases: [...new Set(aliases.map((alias) => alias.trim()).filter(Boolean))] };
+  return {
+    input: input.join(" ").trim(),
+    aliases: [...new Set(aliases.map((alias) => alias.trim()).filter(Boolean))],
+    description: description.trim(),
+  };
 }
 
-async function refFlow(ctx: ShelfCtx, layer: ShelfLayer, args: string) {
+async function refFlow(ctx: ShelfCtx, layer: ShelfLayer, pi: ExtensionAPI, args: string) {
   const [subWord, ...rest] = splitArgs(args.trim());
   const sub = subWord?.toLowerCase();
   if (!sub || sub === "list") {
@@ -1850,6 +2001,7 @@ async function refFlow(ctx: ShelfCtx, layer: ShelfLayer, args: string) {
     if (!input) input = (await ctx.ui.input("仓库地址或 URL（例如 owner/repo 或 https://github.com/...）"))?.trim() ?? "";
     if (!input) return;
     const requestedAliases = parsedArgs.aliases;
+    const requestedDescription = parsedArgs.description;
     const parsed = parseTarget(input);
     if (!parsed) {
       ctx.ui.notify("认不出这个地址。支持 owner/repo、GitHub URL、DOI、arXiv 或 http(s) URL。", "warning");
@@ -1864,11 +2016,21 @@ async function refFlow(ctx: ShelfCtx, layer: ShelfLayer, args: string) {
           value: parsed.value,
           tags: ["ref", parsed.kind, ...(enriched.tags ?? [])],
           aliases: [...new Set([...parsed.aliases, ...requestedAliases, ...(enriched.title ? [enriched.title] : [])])],
+          description: requestedDescription || enriched.description || (parsed.kind === "github" ? undefined : enriched.title),
         }, "global", ctx);
         ctx.ui.notify(`已添加 ${item.title}  →  ${item.value}`, "info");
         return;
       } catch {
         // metadata lookup is best effort; the exact URL is the important part
+      }
+    }
+    let autoDescription: string | undefined = requestedDescription;
+    if (!autoDescription && parsed.kind === "url") {
+      try {
+        const meta = await enrichUrl(parsed.value);
+        autoDescription = meta.description || meta.title;
+      } catch {
+        // description is optional
       }
     }
     const item = await upsert(layer, {
@@ -1877,8 +2039,29 @@ async function refFlow(ctx: ShelfCtx, layer: ShelfLayer, args: string) {
       value: parsed.value,
       tags: ["ref", parsed.kind],
       aliases: [...new Set([...parsed.aliases, ...requestedAliases])],
+      description: autoDescription,
     }, "global", ctx);
     ctx.ui.notify(`已添加 ${item.title}  →  ${item.value}`, "info");
+    return;
+  }
+  if (sub === "describe") {
+    const refs = refRows(layer);
+    const list = choices(refs, refLabel);
+    const picked = list.pick(await ctx.ui.select("为哪条引用生成描述", list.options));
+    if (!picked) return;
+    const description = await describeRef(ctx, pi, picked);
+    if (!description) {
+      ctx.ui.notify("没有找到可用的描述来源。", "warning");
+      return;
+    }
+    const scope = picked.scope ?? "global";
+    const bag = bagFor(layer, scope);
+    const stored = bag.items.find((item) => item.id === picked.id);
+    if (!stored) return;
+    stored.description = description;
+    stored.updated = now();
+    await saveScope(layer, scope);
+    ctx.ui.notify(`已更新描述：${description}`, "info");
     return;
   }
   if (sub === "edit") {
@@ -1888,6 +2071,9 @@ async function refFlow(ctx: ShelfCtx, layer: ShelfLayer, args: string) {
     if (!picked) return;
     const title = await askDefault(ctx, "标题", picked.title);
     if (title === undefined) return;
+    const currentDescription = picked.description ?? "";
+    const descriptionAnswer = await ctx.ui.input(`描述（留空清除。当前：${currentDescription || "无"}）`);
+    const description = descriptionAnswer == null ? picked.description : descriptionAnswer;
     const currentAliases = (picked.aliases ?? []).join(", ");
     const aliasAnswer = await ctx.ui.input(`别名（逗号分隔；留空清除。当前：${currentAliases || "无"}）`);
     const aliases = aliasAnswer == null
@@ -1899,6 +2085,7 @@ async function refFlow(ctx: ShelfCtx, layer: ShelfLayer, args: string) {
     if (!stored) return;
     stored.title = title || stored.title;
     stored.aliases = [...new Set(aliases)];
+    stored.description = description?.trim() || undefined;
     stored.updated = now();
     await saveScope(layer, scope);
     ctx.ui.notify(`已更新 ${stored.title}`, "info");
@@ -2340,7 +2527,7 @@ function installAutocomplete(pi: ExtensionAPI) {
             const shelfItems = matches.map((hit) => ({
               value: hit.row.value,
               label: hit.row.title,
-              description: `@${hit.row.category}${templateSlots(hit.row.value).length ? " 模板" : ""}`,
+              description: [hit.row.description, `@${hit.row.category}`, templateSlots(hit.row.value).length ? "模板" : ""].filter(Boolean).join(" · "),
               shelfKind: "shelf" as const,
             }));
             // Pi owns "@" attachments and Tab file completion for this same token, so keep
@@ -2490,7 +2677,7 @@ export default function (pi: ExtensionAPI) {
       if (verb === "source") return manageSources(shelf);
       if (verb === "value") return manageValues(shelf);
       if (verb === "alias") return manageAliases(shelf, pi);
-      if (verb === "ref") return refFlow(shelf, layer, args.trim().replace(/^ref\b/i, "").trim());
+      if (verb === "ref") return refFlow(shelf, layer, pi, args.trim().replace(/^ref\b/i, "").trim());
       if (verb === "enrich") return enrichFlow(shelf);
       if (verb === "check") return checkFlow(shelf);
       if (verb === "stats") return statsFlow(shelf, layer);
@@ -2599,6 +2786,7 @@ export default function (pi: ExtensionAPI) {
     promptSnippet: "Categorized shelf, including prompt templates with {{variables}}.",
     promptGuidelines: [
       "Use the shelf tool to recall a saved URL, paper, dataset id, note, or prompt template instead of guessing.",
+      "For a Ref entry without a description, call action ref_describe with its id or query. It tries GitHub MCP first, then GitHub API/page metadata, then web_search and a one-sentence summary.",
       "Tags are AND. Category is fuzzy. Do not edit store.json, config.json, or .pi/shelf.json yourself.",
       "To collect from the current session, call action harvest with topic github, doi, arxiv, url, a custom topic id, or all. Always let the user confirm before writing.",
       "When the user describes a reusable prompt, write it as a template. Free fields are {{name}}. Choices are {{name:one|two}}. Defaults are {{name=value}}. Save with action add, category Prompt, and wait for confirmation.",
@@ -2606,7 +2794,7 @@ export default function (pi: ExtensionAPI) {
       "Do not claim text was inserted into the editor. /shelf and ctrl+shift+k expand variables and then insert. Autocomplete inserts the template text; /shelf fill expands variables already in the editor.",
     ],
     parameters: Type.Object({
-      action: Type.String({ description: "search | add | update | delete | harvest | harvest_github | list | prompt_context" }),
+      action: Type.String({ description: "search | add | update | delete | harvest | harvest_github | list | prompt_context | ref_describe" }),
       topic: Type.Optional(Type.String({ description: "Harvest topic: github, doi, arxiv, url, a custom id, or all." })),
       query: Type.Optional(Type.String({ description: "Fuzzy text. Tags use #tag, category uses @Category." })),
       category: Type.Optional(Type.String()),
@@ -2630,6 +2818,22 @@ export default function (pi: ExtensionAPI) {
       if (params.action === "harvest" || params.action === "harvest_github") {
         const topic = params.action === "harvest_github" ? "github" : (params.topic ?? "");
         return { content: [{ type: "text", text: await harvest(shelf, true, topic) }], details: {} };
+      }
+      if (params.action === "ref_describe") {
+        const key = params.id ?? params.query ?? params.title ?? "";
+        const refs = refRows(layer);
+        const picked = refs.find((item) => item.id === key)
+          ?? rankRows(refs, key, 1).map((hit) => hit.row)[0];
+        if (!picked) return { content: [{ type: "text", text: "没有匹配的引用。" }], details: {} };
+        const description = await describeRef(shelf, pi, picked);
+        if (!description) return { content: [{ type: "text", text: "没有找到可用的描述来源。" }], details: {} };
+        const bag = bagFor(layer, picked.scope);
+        const stored = bag.items.find((item) => item.id === picked.id);
+        if (!stored) return { content: [{ type: "text", text: "引用已不存在。" }], details: {} };
+        stored.description = description;
+        stored.updated = now();
+        await saveScope(layer, picked.scope);
+        return { content: [{ type: "text", text: description }], details: { id: picked.id, description } };
       }
       if (params.action === "prompt_context") {
         const text = await promptContextText(shelf);

@@ -190,7 +190,8 @@
 - Item.aliases 可选字段，匹配层级 title → alias（1.5）→ tags（3）→ value（6）→ category（9）；别名只参与检索，不改变展示值。
 - /shelf ref add 支持完整 URL、owner/repo、.git、/tree/main 等写法；GitHub 统一为 https://github.com/owner/repo，DOI 统一为 https://doi.org/...，arXiv 统一为 https://arxiv.org/abs/id；非仓库 URL 原样保留。
 - 添加时从仓库名/owner 派生 aliases（repo、owner、owner/repo、分词）；DOI 为后缀/分词，arXiv 为编号，普通 URL 为 hostname/host+path 分词，路径为 basename/分词。GitHub/DOI/arXiv 尽力抓标题/标签作为额外检索词，失败不影响保存。
-- `/shelf ref add <url> --alias rel --aliases rel5` 追加自定义别名；`/shelf ref edit` 可替换别名（逗号分隔，留空清空）。
+- `/shelf ref add <url> --alias rel --aliases rel5 --description "..."` 追加自定义别名/描述；`/shelf ref edit` 可替换别名（逗号分隔，留空清空）和描述。
+- 描述显示在 `/shelf ref` 选择项、`ref list` 和编辑器补全的 description 行。自动描述顺序：GitHub MCP `search_repositories/get_repository`（仅 tool 上下文有 `executeTool`）→ GitHub API/页面元数据 → web_search 结果经当前模型总结一句；`shelf` 工具的 `ref_describe` 动作供 agent 调用，命令路径自然退回 API。
 - /shelf ref <query>：唯一命中直接插入精确值；多条命中用选择框列出（不猜）；无命中提示。普通输入框补全也会把 Ref 条目按 aliases 匹配出来。
 - 抓取只在 add 时发生，补全/展开不联网，避免输入时抖动。
 - 验证：test/target.test.ts 3 组（GitHub 规范化、DOI/arXiv/普通 URL、拒绝垃圾输入）；test/harness/ref-flow.mjs 验证 add/list/ref 唯一命中；test/match.test.ts 验证别名命中。

@@ -36,6 +36,7 @@ import { applyPositionals, fillTemplate, parsePromptMarkdown, sessionExcerpt, se
 import { createPicker } from "./src/picker.ts";
 import { composeParts, type Part } from "./src/compose.ts";
 import { expandShortcuts } from "./src/shortcut.ts";
+import { rankTools, toolToken, type ToolLike } from "./src/tools.ts";
 import { checkUrl, enrichUrl } from "./src/enrich.ts";
 import {
   applyRemoteCompletion,
@@ -1578,7 +1579,7 @@ async function pinDynamic(ctx: ShelfCtx) {
   ctx.ui.notify(`已钉住 ${row.title}`, "info");
 }
 
-type CompleteItem = { value: string; label: string; description?: string };
+type CompleteItem = { value: string; label: string; description?: string; shelfKind?: "shelf" | "remote" | "tool" };
 type CompleteProvider = {
   triggerCharacters?: string[];
   getSuggestions: (
@@ -1723,6 +1724,23 @@ function remember(key: string, entry: { at: number; text: string; failed: boolea
 }
 
 function installAutocomplete(pi: ExtensionAPI) {
+  // The tool registry is live: MCP servers connect and extensions register tools after
+  // session_start, so this is read on every completion instead of captured once.
+  const toolItems = (prefix: string): CompleteItem[] => {
+    const api = pi as ExtensionAPI & { getAllTools?: () => ToolLike[]; getActiveTools?: () => string[] };
+    if (typeof api.getAllTools !== "function") return [];
+    try {
+      const active = typeof api.getActiveTools === "function" ? api.getActiveTools() : [];
+      return rankTools(api.getAllTools(), prefix, active).map((tool) => ({
+        value: tool.name,
+        label: tool.name,
+        description: tool.description,
+        shelfKind: "tool" as const,
+      }));
+    } catch {
+      return [];
+    }
+  };
   pi.on("session_start", async (_event, ctx) => {
     const known = await readSshHosts();
     const ui = ctx.ui as ShelfUi & {
@@ -1733,7 +1751,9 @@ function installAutocomplete(pi: ExtensionAPI) {
       if (isAltSlash(data)) return { data: "\t" };
     });
     ui.addAutocompleteProvider?.((current) => ({
-      triggerCharacters: [":", "@", "#"],
+      // "_" is a natural trigger for tool names (web_, mcp__github__), so the list can
+      // open without Tab while the user is still inside an identifier.
+      triggerCharacters: [":", "@", "#", "_"],
       async getSuggestions(lines, cursorLine, cursorCol, options) {
         const before = (lines[cursorLine] ?? "").slice(0, cursorCol);
         const interception = shelfInterceptionContext(before, options.force === true);
@@ -1779,6 +1799,10 @@ function installAutocomplete(pi: ExtensionAPI) {
         const path = pathToken(before);
         const local = path ? await localDriveItems(path, { fuzzy: options.force === true }) : null;
         if (local?.length) return { items: local, prefix: path };
+        // Tool names come from Pi's live registry, never a hardcoded list. A token with
+        // "_" (web_, mcp__github__) opens on its own; other tokens need Tab/Alt+/.
+        const toolContext = toolToken(before, options.force === true);
+        const toolMatches = toolContext ? toolItems(toolContext.prefix) : [];
         const shelfQuery = interception.kind === "shelf-query" ? interception.query : null;
         if (shelfQuery) {
           const cwd = (ctx as ShelfCtx).cwd ?? process.cwd();
@@ -1798,14 +1822,36 @@ function installAutocomplete(pi: ExtensionAPI) {
             } catch {
               native = null;
             }
-            const items = native && native.prefix === shelfQuery.seed ? [...shelfItems, ...native.items] : shelfItems;
+            // The tool list is a separate source: a saved entry and a tool can share a
+            // token, so both stay available and each keeps its own label. A token that is
+            // literally the start of a tool name puts tools first; otherwise saved entries
+            // keep their usual priority.
+            const tools = toolContext && toolContext.prefix === shelfQuery.seed ? toolMatches : [];
+            const toolFirst = tools.some((tool) => tool.value.toLowerCase().startsWith(shelfQuery.seed.toLowerCase()));
+            const merged = toolFirst ? [...tools, ...shelfItems] : [...shelfItems, ...tools];
+            const items = native && native.prefix === shelfQuery.seed ? [...merged, ...native.items] : merged;
             return { items, prefix: shelfQuery.seed };
           }
+        }
+        if (toolMatches.length && toolContext) {
+          let native: { items: CompleteItem[]; prefix: string } | null = null;
+          try {
+            native = await current.getSuggestions(lines, cursorLine, cursorCol, options);
+          } catch {
+            native = null;
+          }
+          const items = native && native.prefix === toolContext.prefix ? [...toolMatches, ...native.items] : toolMatches;
+          return { items, prefix: toolContext.prefix };
         }
         return current.getSuggestions(lines, cursorLine, cursorCol, options);
       },
       applyCompletion(lines, cursorLine, cursorCol, item, prefix) {
         const marked = item as CompletionMeta & { shelfKind?: string };
+        // A tool name replaces the typed fragment and adds one space, the same rule the
+        // shelf/remote insertions use.
+        if (marked.shelfKind === "tool") {
+          return applyRemoteCompletion(lines, cursorLine, cursorCol, item.value, prefix, false);
+        }
         if (marked.shelfKind !== "shelf" && marked.shelfKind !== "remote") {
           const applied = current.applyCompletion(lines, cursorLine, cursorCol, item, prefix);
           if (marked.completionKind) {

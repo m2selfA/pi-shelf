@@ -229,8 +229,13 @@ export function rankPath(path: string, query: string) {
 const FIELD_TIER = { title: 0, tags: 3, value: 6, category: 9 } as const;
 const QUALITY_MAX = 200;
 
-function fieldQuality(text: string, token: string) {
-  const match = fuzzyMatch(token, text ?? "");
+function fieldQuality(text: string, token: string, literalForShort = false) {
+  const body = text ?? "";
+  // A long prompt body contains almost any three-letter subsequence ("zzz" hides in
+  // summarizer/analyzes/zero). Short tokens therefore need a literal substring in the
+  // body; longer ones keep the fuzzy ranking.
+  if (literalForShort && token.length <= 4 && !body.toLowerCase().includes(token.toLowerCase())) return Infinity;
+  const match = fuzzyMatch(token, body);
   if (!match.matches) return Infinity;
   return Math.max(-1, Math.min(1, match.score / QUALITY_MAX));
 }
@@ -261,7 +266,7 @@ export function score(row: Pick<Row, "category" | "title" | "value" | "tags">, q
     const best = Math.min(
       fieldQuality(row.title, token) + FIELD_TIER.title,
       fieldQuality(tags.join(" "), token) + FIELD_TIER.tags,
-      fieldQuality(row.value, token) + FIELD_TIER.value,
+      fieldQuality(row.value, token, true) + FIELD_TIER.value,
       fieldQuality(row.category, token) + FIELD_TIER.category,
     );
     if (best === Infinity) return Infinity;

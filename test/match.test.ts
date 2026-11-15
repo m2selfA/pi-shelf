@@ -52,6 +52,14 @@ test("recent use outranks an old but larger count", () => {
   assert.equal(frecency(0, undefined, now), 0);
 });
 
+test("a short token does not fuzzy-match a long body", () => {
+  const prompt: Row = { ...relion, id: "p", category: "Prompt", title: "workflow", value: "summarizer analyzes zero-cost evidence and authorizes a final answer", tags: [] };
+  // "zzz" is a subsequence of summarizer/analyzes/zero but not a word in the body.
+  assert.equal(rankRows([prompt], "zzz").length, 0);
+  assert.equal(rankRows([prompt], "cryo-EM").length, 0);
+  assert.equal(rankRows([prompt], "analyzes").length, 1);
+});
+
 test("every query token must match, and usage breaks ties", () => {
   const base: Row = { ...relion, id: "a", category: "Note", title: "relion", value: "x", tags: [], uses: 0 };
   assert.equal(rankRows([base], "relion blurry").length, 0);

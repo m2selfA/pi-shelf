@@ -83,6 +83,15 @@ test("a plugin alias finds its tools without knowing their names", () => {
   assert.equal(rankPackages(pluginTools, "ssh_").length, 0);
 });
 
+test("usage frequency breaks ties inside one match quality", () => {
+  const tools = [
+    { name: "ssh_bash", description: "Bash", exposure: "direct" },
+    { name: "ssh_upload", description: "Upload", exposure: "direct" },
+  ];
+  const usage = new Map([["ssh_upload", 2]]);
+  assert.deepEqual(rankTools(tools, "ssh-", [], 10, usage).map((tool) => tool.name), ["ssh_upload", "ssh_bash"]);
+});
+
 test("descriptions carry the source and the activation state", () => {
   const [github] = rankTools(tools, "mcp__github__", ["mcp__github__search_code"]);
   assert.equal(github?.description, "MCP github · Search code");

@@ -143,7 +143,13 @@ export function describeTool(tool: ToolLike, active: boolean) {
  * tool-name hit, so typing "ssh" prefers ssh_* names while "pi-ssh-tools" still finds all
  * of that plugin's tools. Active tools win ties.
  */
-export function rankTools(tools: ToolLike[], prefix: string, active: Iterable<string> = [], limit = 10): ToolSuggestion[] {
+export function rankTools(
+  tools: ToolLike[],
+  prefix: string,
+  active: Iterable<string> = [],
+  limit = 10,
+  usage?: Map<string, number>,
+): ToolSuggestion[] {
   const activeSet = new Set(active);
   return tools
     .filter((tool) => Boolean(tool.name) && tool.exposure !== "hidden")
@@ -159,6 +165,9 @@ export function rankTools(tools: ToolLike[], prefix: string, active: Iterable<st
     .sort(
       (a, b) =>
         a.rank - b.rank ||
+        // Frequency first inside the same match quality: the user asked for the
+        // frequently chosen tool to be at the top of an xxx- prefix.
+        (usage?.get(b.tool.name) ?? 0) - (usage?.get(a.tool.name) ?? 0) ||
         Number(activeSet.has(b.tool.name)) - Number(activeSet.has(a.tool.name)) ||
         a.tool.name.length - b.tool.name.length ||
         a.tool.name.localeCompare(b.tool.name),
@@ -171,7 +180,7 @@ export function rankTools(tools: ToolLike[], prefix: string, active: Iterable<st
  * Package rows let a plugin name be completed literally ("pi-ssh-tools") while the tool
  * rows above it answer the more common question ("which tools does it provide?").
  */
-export function rankPackages(tools: ToolLike[], prefix: string, limit = 3): PackageSuggestion[] {
+export function rankPackages(tools: ToolLike[], prefix: string, usage?: Map<string, number>, limit = 3): PackageSuggestion[] {
   const groups = new Map<string, { fullName?: string; aliases: Set<string>; tools: Set<string>; kind: "plugin" | "mcp" }>();
   for (const tool of tools) {
     if (!tool.packageName) continue;
@@ -191,7 +200,13 @@ export function rankPackages(tools: ToolLike[], prefix: string, limit = 3): Pack
     // Package rows are for plugin-name queries (exact, prefix, segment). A substring
     // hit would put "pi-ssh-tools" under every "ssh_" query as well.
     .filter((hit) => hit.rank <= 2)
-    .sort((a, b) => a.rank - b.rank || b.group.tools.size - a.group.tools.size || a.name.localeCompare(b.name))
+    .sort(
+      (a, b) =>
+        a.rank - b.rank ||
+        (usage?.get(b.name) ?? 0) - (usage?.get(a.name) ?? 0) ||
+        b.group.tools.size - a.group.tools.size ||
+        a.name.localeCompare(b.name),
+    )
     .slice(0, limit)
     .map(({ name, group }) => {
       const sample = [...group.tools].slice(0, 5).join(", ");

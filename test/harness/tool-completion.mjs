@@ -5,7 +5,14 @@
  *   node --experimental-strip-types test/harness/tool-completion.mjs
  */
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import { mkdtemp } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { initTheme } from "@earendil-works/pi-coding-agent";
+
+const agentDir = await mkdtemp(join(tmpdir(), "pi-shelf-harness-"));
+process.env.PI_CODING_AGENT_DIR = agentDir;
 
 const handlers = new Map();
 const tools = [
@@ -72,4 +79,15 @@ const packageHit = await provider.getSuggestions(["use pi-ssh"], 0, 10, { ...opt
 assert.equal(packageHit.items[0].label, "pi-ssh-tools");
 const packageApplied = provider.applyCompletion(["use pi-ssh"], 0, 10, packageHit.items[0], packageHit.prefix);
 assert.deepEqual(packageApplied, { lines: ["use pi-ssh-tools "], cursorLine: 0, cursorCol: 17 }, "a package name is inserted literally");
+
+// Frequency: picking ssh_upload under "ssh_" puts it first on the next "ssh-" query.
+const sshList = await provider.getSuggestions(["use ssh_"], 0, 8, { ...options, force: false });
+const upload = sshList.items.find((item) => item.label === "ssh_upload");
+assert.ok(upload, "ssh_upload is offered");
+provider.applyCompletion(["use ssh_"], 0, 8, upload, sshList.prefix);
+const ranked = await provider.getSuggestions(["use ssh-"], 0, 8, { ...options, force: true });
+assert.equal(ranked.items[0].label, "ssh_upload", "the accepted tool moves to the front");
+await new Promise((resolve) => setTimeout(resolve, 500));
+const saved = JSON.parse(await readFile(join(agentDir, "pi-shelf", "completions.json"), "utf8"));
+assert.equal(saved.tokens.ssh.ssh_upload.uses, 1, "usage is persisted under the shared stem");
 console.log("tool completion harness: OK");

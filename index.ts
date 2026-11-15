@@ -38,6 +38,7 @@ import { createPicker } from "./src/picker.ts";
 import { composeParts, type Part } from "./src/compose.ts";
 import { expandShortcuts } from "./src/shortcut.ts";
 import { packageIdentity, rankPackages, rankTools, toolToken, type ToolLike } from "./src/tools.ts";
+import { completionScores, emptyCompletionStats, parseCompletionStats, recordCompletion, type CompletionStats } from "./src/completions.ts";
 import { checkUrl, enrichUrl } from "./src/enrich.ts";
 import {
   applyRemoteCompletion,
@@ -84,6 +85,7 @@ const STORE = join(SHELF_DIR, "store.json");
 const RULES_FILE = join(SHELF_DIR, "config.json");
 const TRUST_FILE = join(SHELF_DIR, "trust.json");
 const DIAGNOSTICS_FILE = join(SHELF_DIR, "diagnostics.json");
+const COMPLETIONS_FILE = join(SHELF_DIR, "completions.json");
 
 type ShelfLayer = {
   collection: Collection;
@@ -949,6 +951,14 @@ async function doctor(ctx: ShelfCtx, layer: ShelfLayer) {
   } catch {
     lines.push("--    死链报告  还没跑过 /shelf check");
   }
+  try {
+    const stats = parseCompletionStats(JSON.parse(await readFile(COMPLETIONS_FILE, "utf8")));
+    const prefixes = Object.keys(stats.tokens).length;
+    const values = Object.values(stats.tokens).reduce((sum, group) => sum + Object.keys(group).length, 0);
+    lines.push(`OK    补全统计  ${prefixes} 个前缀 / ${values} 个候选`);
+  } catch {
+    lines.push("--    补全统计  还没记录");
+  }
   lines.push(`OK    Pi agent 目录  ${getAgentDir()}`);
   if (process.env.PI_CODING_AGENT_DIR) lines.push(`OK    环境变量  PI_CODING_AGENT_DIR=${process.env.PI_CODING_AGENT_DIR}`);
   ctx.ui.notify(lines.join("\n"), layer.corrupt ? "error" : "info");
@@ -1730,7 +1740,26 @@ function remember(key: string, entry: { at: number; text: string; failed: boolea
   }
 }
 
+async function loadCompletionStats(): Promise<CompletionStats> {
+  try {
+    return parseCompletionStats(JSON.parse(await readFile(COMPLETIONS_FILE, "utf8")));
+  } catch {
+    return emptyCompletionStats();
+  }
+}
+
 function installAutocomplete(pi: ExtensionAPI) {
+  let completionStats = emptyCompletionStats();
+  let flushTimer: ReturnType<typeof setTimeout> | undefined;
+  const scheduleCompletionSave = () => {
+    if (flushTimer) clearTimeout(flushTimer);
+    flushTimer = setTimeout(() => {
+      // Stats are a convenience cache, not shelf data: a failed write must never break
+      // the completion path.
+      void withStoreLock(COMPLETIONS_FILE, () => writeAtomic(COMPLETIONS_FILE, completionStats)).catch(() => {});
+    }, 300);
+    flushTimer.unref?.();
+  };
   // The tool registry is live: MCP servers connect and extensions register tools after
   // session_start, so this is read on every completion instead of captured once.
   // Package names are not part of ToolInfo, so they are resolved from the extension
@@ -1774,14 +1803,15 @@ function installAutocomplete(pi: ExtensionAPI) {
     try {
       const active = typeof api.getActiveTools === "function" ? api.getActiveTools() : [];
       const tools = api.getAllTools().map(enrichTool);
+      const usage = completionScores(completionStats, prefix);
       return {
-        tools: rankTools(tools, prefix, active).map((tool) => ({
+        tools: rankTools(tools, prefix, active, 10, usage).map((tool) => ({
           value: tool.name,
           label: tool.name,
           description: tool.description,
           shelfKind: "tool" as const,
         })),
-        packages: rankPackages(tools, prefix).map((pkg) => ({
+        packages: rankPackages(tools, prefix, usage).map((pkg) => ({
           value: pkg.name,
           label: pkg.name,
           description: [pkg.fullName, pkg.description].filter(Boolean).join(" · "),
@@ -1793,6 +1823,7 @@ function installAutocomplete(pi: ExtensionAPI) {
     }
   };
   pi.on("session_start", async (_event, ctx) => {
+    completionStats = await loadCompletionStats();
     const known = await readSshHosts();
     const ui = ctx.ui as ShelfUi & {
       addAutocompleteProvider?: (factory: (current: CompleteProvider) => CompleteProvider) => void;
@@ -1911,6 +1942,8 @@ function installAutocomplete(pi: ExtensionAPI) {
         // A tool name replaces the typed fragment and adds one space, the same rule the
         // shelf/remote insertions use.
         if (marked.shelfKind === "tool" || marked.shelfKind === "package") {
+          recordCompletion(completionStats, prefix, item.value);
+          scheduleCompletionSave();
           return applyRemoteCompletion(lines, cursorLine, cursorCol, item.value, prefix, false);
         }
         if (marked.shelfKind !== "shelf" && marked.shelfKind !== "remote") {

@@ -150,5 +150,6 @@
 - 触发：只有带 `_` 的 token（`web_`、`mcp__github__`）自动弹出；带 `-` 的 token（`web-`、`pi-ssh`）和其他普通词一样需要 Tab / `alt+/`。`-` 与 `_` 在匹配时等价（连续分隔符也折叠），所以按补全键后 `web-` 命中 `web_search`、`pi_ssh` 命中 `pi-ssh-tools`；`-` 不进入 `triggerCharacters`。这样普通句子的 `read`、`write`、`state-of-the-art` 都不会打断输入。
 - 排序：完全相等 → 前缀 → 名字分段前缀（`sear` 命中 `web_search`）→ 子串 → 子序列；同分时启用中的工具优先，再按名字长度和字典序。
 - 合并：工具、插件行与收藏是三套候选。token 本身就是某个工具名前缀时工具排前面；token 是插件名前缀时插件行排前面、其工具随后；这两种强命中会独占列表（不再混入正文里碰巧提到这个词的收藏）。弱命中时收藏保持原来的优先级，Pi 原生候选最后。
-- 插入：替换 token 并补一个空格，复用 `applyRemoteCompletion`。
-- 验证：`test/tools.test.ts` 9 组（token 触发、`_` 自动/`-` 需补全键、排除 `/@#`、排序、隐藏工具、包名推导、插件别名、描述）；`test/harness/tool-completion.mjs` 用假 registry 驱动真实 provider，覆盖自动弹出、Tab、插件名/工具名、apply 与 delegate 分支。另用本机真实 `pi.getAllTools()` 导出的 71 个工具做过查询探针：`ssh_` → 10 个 `ssh_*`，`pi-ssh` → `pi-ssh-tools` + 10 个工具，`pi-runs` → 8 个，`pi-fff` → 2 个，`pi-codex` → 2 个，`search-boost` → 5 个。顺带修掉一个旧问题：短 token（≤4 字符）不再对长 prompt 正文做子序列匹配，避免 `zzz` 命中 `summarizer/analyzes/zero`。
+- 插入：替换 token 并补一个空格，复用 `applyRemoteCompletion`。接受工具/插件候选时按前缀词干记录一次（`web-`/`web_`/`web` 共用 `web`），同一匹配层级内按 30 天衰减频率排序；高频率项因此排在前面。统计写本地 `completions.json`，不进入仓库。
+- 频率数据：`src/completions.ts` 的 `completionKey` / `recordCompletion` / `completionScores`；每个前缀最多 20 个候选、整个文件最多 200 个前缀，损坏时按空统计处理，写入失败不影响补全。
+- 验证：`test/tools.test.ts` 10 组（token 触发、`_` 自动/`-` 需补全键、排除 `/@#`、排序、隐藏工具、包名推导、插件别名、描述）；`test/harness/tool-completion.mjs` 用假 registry 驱动真实 provider，覆盖自动弹出、Tab、插件名/工具名、apply 与 delegate 分支。另用本机真实 `pi.getAllTools()` 导出的 71 个工具做过查询探针：`ssh_` → 10 个 `ssh_*`，`pi-ssh` → `pi-ssh-tools` + 10 个工具，`pi-runs` → 8 个，`pi-fff` → 2 个，`pi-codex` → 2 个，`search-boost` → 5 个。顺带修掉一个旧问题：短 token（≤4 字符）不再对长 prompt 正文做子序列匹配，避免 `zzz` 命中 `summarizer/analyzes/zero`。

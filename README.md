@@ -34,6 +34,7 @@ npm run typecheck  # tsc --noEmit，strict + noUncheckedIndexedAccess
 | `$PI_CODING_AGENT_DIR/pi-shelf/config.json` | 全局 topic、动态源与变量 provider，可以单独拷贝 |
 | `$PI_CODING_AGENT_DIR/pi-shelf/trust.json` | 项目文件的批准哈希（一个 checkout 一条） |
 | `$PI_CODING_AGENT_DIR/pi-shelf/diagnostics.json` | 最近一次 `/shelf check` 的死链报告 |
+| `$PI_CODING_AGENT_DIR/pi-shelf/completions.json` | 补全接受频率（按前缀词干，30 天衰减） |
 | `<repo>/.pi/shelf.json` | 当前仓库的收藏、归档和规则，可以提交 |
 
 路径跟随 Pi 的 agent 目录（`PI_CODING_AGENT_DIR`），不是写死的 `~/.pi/agent`；换了 agent 目录仍然是同一个架子。仓库按 `git remote` 认，不按盘符。`git@github.com:owner/repo.git` 和 `https://github.com/owner/repo` 是同一份。文件里的 remote 对不上当前仓库时不读、也不覆盖。同一个 `value`，仓库条目盖住全局条目。写入先写临时文件再替换。旧的单文件 `store.json` 会在下次打开时把规则拆到 `config.json`。
@@ -69,6 +70,7 @@ npm run typecheck  # tsc --noEmit，strict + noUncheckedIndexedAccess
 
 - 本地路径优先用 Pi 自带的补全。`/add-dir ` 后面输入 `./`、`~/` 或 POSIX 路径，或者按 Tab；Windows 盘符路径（如 `E:/in`）由 pi-shelf 兼容补全并保留目录末尾的 `/`。`/add-dir` 只显示目录，普通路径按大小写不敏感的自然序排列；显式按 Tab 时还支持当前目录内的模糊路径匹配（`/add-dir sr` + Tab 得到 `src/`），点文件需显式输入 `.`。裸词只在按 Tab 时才由 pi-shelf 接管，直接输入时仍交给 Pi。
 - 工具名也在输入框里补全，候选来自 Pi 的运行中注册表（`pi.getAllTools()`），不是写死的名单：内置工具、扩展注册的工具、当前已连接的 MCP 工具（如 `web_search`、`web_fetch`）都会出现。只有带 `_` 的片段（`web_`、`mcp__github__`）会自动弹出；`web-`、`pi-ssh` 这类带 `-` 的词和普通单词（`web`、`ssh`）一样，按 Tab/`alt+/` 才查。`-` 和 `_` 在匹配时等价：按补全键后，`web-` 能补出 `web_search`，`pi_ssh` 能找到 `pi-ssh-tools`。
+- 补全频率：按 Tab/`alt+/` 接受一个工具或插件候选后，会按前缀词干记录一次（`web-`、`web_`、`web` 共用 `web`），同一匹配层级内按 30 天衰减的频率排序，所以常用的 `ssh_upload` 会排到 `ssh-` 列表前面。统计只写本地 `completions.json`，不影响仓库文件。
 - 插件提供的工具按插件名聚合：工具本身没有包名，pi-shelf 从扩展的来源推导（`npm:@scope/pkg`、本地 checkout 的 `package.json`、单文件扩展的入口文件名），所以按 Tab 输入 `pi-ssh` 时会先给出插件行 `pi-ssh-tools`（10 个工具），下面直接列出 `ssh_upload`、`ssh_bash` 等；输入 `ssh_` 则直接按工具名前缀列出。`search-boost` 这类不是 `pi-` 开头的插件名按 Tab 也能查到。每行显示来源（内置 / MCP 服务器 / 插件名）和是否启用，选中后补全名字并加一个空格。会话中途连上的 MCP 工具也会立即出现，因为候选是每次按键时现查的。
 - 收藏也在输入框里补全。`@`、`#` 查询可在输入时触发；普通文本只有按 `Tab`/`Alt+/` 明确请求时才触发 Shelf 查询，避免写普通句子时被候选打断。光标前的词至少两个字，下拉出现标题，选中后替掉这一截并写入收藏的值；同分时优先使用次数多、最近更新的条目。
 - 收藏候选排在 Pi 自己的候选前面，不会顶掉它们：`@` 是 Pi 的文件附件前缀，Tab 也是 Pi 的强制文件补全，所以同一截文本里 Pi 的文件/目录候选会接在 Shelf 候选之后一起显示。路径仍走原来的补全。

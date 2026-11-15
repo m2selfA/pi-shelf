@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { mkdir, readdir, readFile, rename, rmdir, stat, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -36,7 +37,7 @@ import { applyPositionals, fillTemplate, parsePromptMarkdown, sessionExcerpt, se
 import { createPicker } from "./src/picker.ts";
 import { composeParts, type Part } from "./src/compose.ts";
 import { expandShortcuts } from "./src/shortcut.ts";
-import { rankTools, toolToken, type ToolLike } from "./src/tools.ts";
+import { packageIdentity, rankPackages, rankTools, toolToken, type ToolLike } from "./src/tools.ts";
 import { checkUrl, enrichUrl } from "./src/enrich.ts";
 import {
   applyRemoteCompletion,
@@ -1579,7 +1580,7 @@ async function pinDynamic(ctx: ShelfCtx) {
   ctx.ui.notify(`已钉住 ${row.title}`, "info");
 }
 
-type CompleteItem = { value: string; label: string; description?: string; shelfKind?: "shelf" | "remote" | "tool" };
+type CompleteItem = { value: string; label: string; description?: string; shelfKind?: "shelf" | "remote" | "tool" | "package" };
 type CompleteProvider = {
   triggerCharacters?: string[];
   getSuggestions: (
@@ -1726,19 +1727,63 @@ function remember(key: string, entry: { at: number; text: string; failed: boolea
 function installAutocomplete(pi: ExtensionAPI) {
   // The tool registry is live: MCP servers connect and extensions register tools after
   // session_start, so this is read on every completion instead of captured once.
-  const toolItems = (prefix: string): CompleteItem[] => {
+  // Package names are not part of ToolInfo, so they are resolved from the extension
+  // source: "npm:@scope/pkg" directly, or the nearest package.json for a local checkout.
+  const manifestCache = new Map<string, string | null>();
+  const manifestName = (dir: string | undefined): string | undefined => {
+    if (!dir) return undefined;
+    let current = dir;
+    for (let depth = 0; depth < 5; depth += 1) {
+      const file = join(current, "package.json");
+      if (manifestCache.has(file)) {
+        const hit = manifestCache.get(file);
+        if (hit) return hit;
+      } else {
+        try {
+          const parsed = JSON.parse(readFileSync(file, "utf8")) as { name?: unknown };
+          const name = typeof parsed.name === "string" ? parsed.name : "";
+          manifestCache.set(file, name || null);
+          if (name) return name;
+        } catch {
+          manifestCache.set(file, null);
+        }
+      }
+      const parent = dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+    return undefined;
+  };
+  const enrichTool = (tool: ToolLike): ToolLike => {
+    const source = tool.sourceInfo?.source;
+    if (source === "builtin" || source === "sdk") return tool;
+    const identity = packageIdentity(source, tool.sourceInfo?.path, manifestName(tool.sourceInfo?.baseDir));
+    return identity
+      ? { ...tool, packageName: identity.name, packageFullName: identity.fullName, packageAliases: identity.aliases }
+      : tool;
+  };
+  const toolCandidates = (prefix: string): { tools: CompleteItem[]; packages: CompleteItem[] } => {
     const api = pi as ExtensionAPI & { getAllTools?: () => ToolLike[]; getActiveTools?: () => string[] };
-    if (typeof api.getAllTools !== "function") return [];
+    if (typeof api.getAllTools !== "function") return { tools: [], packages: [] };
     try {
       const active = typeof api.getActiveTools === "function" ? api.getActiveTools() : [];
-      return rankTools(api.getAllTools(), prefix, active).map((tool) => ({
-        value: tool.name,
-        label: tool.name,
-        description: tool.description,
-        shelfKind: "tool" as const,
-      }));
+      const tools = api.getAllTools().map(enrichTool);
+      return {
+        tools: rankTools(tools, prefix, active).map((tool) => ({
+          value: tool.name,
+          label: tool.name,
+          description: tool.description,
+          shelfKind: "tool" as const,
+        })),
+        packages: rankPackages(tools, prefix).map((pkg) => ({
+          value: pkg.name,
+          label: pkg.name,
+          description: [pkg.fullName, pkg.description].filter(Boolean).join(" · "),
+          shelfKind: "package" as const,
+        })),
+      };
     } catch {
-      return [];
+      return { tools: [], packages: [] };
     }
   };
   pi.on("session_start", async (_event, ctx) => {
@@ -1802,7 +1847,9 @@ function installAutocomplete(pi: ExtensionAPI) {
         // Tool names come from Pi's live registry, never a hardcoded list. A token with
         // "_" (web_, mcp__github__) opens on its own; other tokens need Tab/Alt+/.
         const toolContext = toolToken(before, options.force === true);
-        const toolMatches = toolContext ? toolItems(toolContext.prefix) : [];
+        const toolFound = toolContext ? toolCandidates(toolContext.prefix) : { tools: [], packages: [] };
+        const toolMatches = toolFound.tools;
+        const packageMatches = toolFound.packages;
         const shelfQuery = interception.kind === "shelf-query" ? interception.query : null;
         if (shelfQuery) {
           const cwd = (ctx as ShelfCtx).cwd ?? process.cwd();
@@ -1827,20 +1874,27 @@ function installAutocomplete(pi: ExtensionAPI) {
             // literally the start of a tool name puts tools first; otherwise saved entries
             // keep their usual priority.
             const tools = toolContext && toolContext.prefix === shelfQuery.seed ? toolMatches : [];
+            const packages = toolContext && toolContext.prefix === shelfQuery.seed ? packageMatches : [];
             const toolFirst = tools.some((tool) => tool.value.toLowerCase().startsWith(shelfQuery.seed.toLowerCase()));
-            const merged = toolFirst ? [...tools, ...shelfItems] : [...shelfItems, ...tools];
+            const packageFirst = packages.length > 0 && !toolFirst;
+            const toolBlock = packageFirst ? [...packages, ...tools] : [...tools, ...packages];
+            // A strong tool/plugin hit owns the token: the shelf entries that merely
+            // mention the word in their body would otherwise bury the real candidates.
+            const merged = toolFirst || packageFirst ? toolBlock : [...shelfItems, ...toolBlock];
             const items = native && native.prefix === shelfQuery.seed ? [...merged, ...native.items] : merged;
             return { items, prefix: shelfQuery.seed };
           }
         }
-        if (toolMatches.length && toolContext) {
+        if ((toolMatches.length || packageMatches.length) && toolContext) {
           let native: { items: CompleteItem[]; prefix: string } | null = null;
           try {
             native = await current.getSuggestions(lines, cursorLine, cursorCol, options);
           } catch {
             native = null;
           }
-          const items = native && native.prefix === toolContext.prefix ? [...toolMatches, ...native.items] : toolMatches;
+          const toolFirst = toolMatches.some((tool) => tool.value.toLowerCase().startsWith(toolContext.prefix.toLowerCase()));
+          const block = toolFirst || !packageMatches.length ? [...toolMatches, ...packageMatches] : [...packageMatches, ...toolMatches];
+          const items = native && native.prefix === toolContext.prefix ? [...block, ...native.items] : block;
           return { items, prefix: toolContext.prefix };
         }
         return current.getSuggestions(lines, cursorLine, cursorCol, options);
@@ -1849,7 +1903,7 @@ function installAutocomplete(pi: ExtensionAPI) {
         const marked = item as CompletionMeta & { shelfKind?: string };
         // A tool name replaces the typed fragment and adds one space, the same rule the
         // shelf/remote insertions use.
-        if (marked.shelfKind === "tool") {
+        if (marked.shelfKind === "tool" || marked.shelfKind === "package") {
           return applyRemoteCompletion(lines, cursorLine, cursorCol, item.value, prefix, false);
         }
         if (marked.shelfKind !== "shelf" && marked.shelfKind !== "remote") {

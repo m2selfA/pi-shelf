@@ -146,8 +146,9 @@
 
 - 来源：Pi 文档 `packages/coding-agent/docs/extensions.md` 的 `pi.getAllTools()` / `pi.getActiveTools()` 与 Autocomplete Providers 一节；示例 `examples/extensions/github-issue-autocomplete.ts` 的 provider 结构。`ToolInfo` 带 `name`、`description`、`exposure`、`namespace`、`sourceInfo`，所以来源和启用状态都能显示。
 - 动态性：每次补全调用 `pi.getAllTools()`，不缓存静态名单；MCP 服务器在会话中途连上后，工具立即进入候选。旧版 Pi 没有该方法时静默退回原行为。
-- 触发：带 `_` 的 token（`web_`、`mcp__github__`）自动弹出；其他 token 需要 Tab / `alt+/`。这样普通句子的 `read`、`write` 不会打断输入。
+- 插件名：`ToolInfo` 没有包名字段，所以从 `sourceInfo` 推导——`npm:@scope/pkg` 直接解析；本地包读最近的 `package.json`；单文件扩展（source `auto`）退回入口文件名（`search-boost.js` → `search-boost`），避免把所有工具归到 `extensions`。每个工具同时按包名（含 scoped 全名）建别名，因此 `pi-ssh`、`pi-runs`、`pi-codex`、`search-boost` 都能找到对应工具。包名行单独列出（`插件 · N 个工具 · 示例`），选中插入包名；工具行插入工具名。
+- 触发：带 `_` 的 token（`web_`、`mcp__github__`）或 `pi-` 开头的插件名自动弹出；其他 token 需要 Tab / `alt+/`。这样普通句子的 `read`、`write` 不会打断输入。
 - 排序：完全相等 → 前缀 → 名字分段前缀（`sear` 命中 `web_search`）→ 子串 → 子序列；同分时启用中的工具优先，再按名字长度和字典序。
-- 合并：工具与收藏是两套候选。token 本身就是某个工具名的前缀时工具排前面；否则收藏保持原来的优先级，Pi 原生候选最后。
+- 合并：工具、插件行与收藏是三套候选。token 本身就是某个工具名前缀时工具排前面；token 是插件名前缀时插件行排前面、其工具随后；这两种强命中会独占列表（不再混入正文里碰巧提到这个词的收藏）。弱命中时收藏保持原来的优先级，Pi 原生候选最后。
 - 插入：替换 token 并补一个空格，复用 `applyRemoteCompletion`。
-- 验证：`test/tools.test.ts` 5 组（token 触发、排除 `/@#`、排序、隐藏工具、描述）；`test/harness/tool-completion.mjs` 用假 registry 驱动真实 provider，覆盖自动弹出、Tab、apply 与 delegate 分支。顺带修掉一个旧问题：短 token（≤4 字符）不再对长 prompt 正文做子序列匹配，避免 `zzz` 命中 `summarizer/analyzes/zero`。
+- 验证：`test/tools.test.ts` 8 组（token 触发、`pi-` 自动、排除 `/@#`、排序、隐藏工具、包名推导、插件别名、描述）；`test/harness/tool-completion.mjs` 用假 registry 驱动真实 provider，覆盖自动弹出、Tab、插件名/工具名、apply 与 delegate 分支。另用本机真实 `pi.getAllTools()` 导出的 71 个工具做过查询探针：`ssh_` → 10 个 `ssh_*`，`pi-ssh` → `pi-ssh-tools` + 10 个工具，`pi-runs` → 8 个，`pi-fff` → 2 个，`pi-codex` → 2 个，`search-boost` → 5 个。顺带修掉一个旧问题：短 token（≤4 字符）不再对长 prompt 正文做子序列匹配，避免 `zzz` 命中 `summarizer/analyzes/zero`。

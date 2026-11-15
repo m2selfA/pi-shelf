@@ -1,6 +1,6 @@
 {
   "name": "pi-shelf",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Categorized shelf for Pi: fuzzy-pick a saved URL or note and paste it into the input.",
   "type": "module",
@@ -19,11 +19,14 @@
       "./skill"
     ]
   },
-  "dependencies": {
-    "@earendil-works/pi-tui": "^1.2.0"
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^1.2.0",
+    "@earendil-works/pi-tui": "^1.2.0",
     "@types/node": "^26.6.5",
     "typebox": "^1.3.27",
     "typescript": "^7.0.2"

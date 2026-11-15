@@ -17,12 +17,16 @@ pi --extension ./index.ts
 开发时先装依赖再跑检查：
 
 ```bash
-npm install        # typescript、@types/node、typebox、pi-coding-agent
+npm install        # typescript、@types/node、typebox、pi-coding-agent、pi-tui
 npm test           # 单元测试
 npm run typecheck  # tsc --noEmit，strict + noUncheckedIndexedAccess
 ```
 
-已有 Pi 会话安装或更新后，执行 `/reload`，或重启 Pi，扩展才会进入当前会话。输入框补全只显示已经保存的收藏和提示词文件，不会因为安装插件自动生成条目；先用 `/shelf add` 保存一条，再输入标题的至少两个字符并按 Tab 或 `alt+/`。
+已有 Pi 会话安装或更新后，执行 `/reload`，或重启 Pi，扩展才会进入当前会话。
+
+打包约定：Pi 宿主自己提供的包（`@earendil-works/pi-coding-agent`、`@earendil-works/pi-tui`、`typebox` 等）只能写在 `peerDependencies` 里、范围用 `"*"`，不能写进 `dependencies`。写进 `dependencies` 会被扩展加载器判定为重复运行时模块，启动时打印 `Host-provided extension packages must be declared in peerDependencies` 警告，并且可能在安装树里生成一份和宿主版本不一致的副本。本地开发用的具体版本放在 `devDependencies`。
+
+输入框补全只显示已经保存的收藏和提示词文件，不会因为安装插件自动生成条目；先用 `/shelf add` 保存一条，再输入标题的至少两个字符并按 Tab 或 `alt+/`。
 
 | 文件 | 内容 |
 | --- | --- |

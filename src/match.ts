@@ -230,7 +230,7 @@ export function rankPath(path: string, query: string) {
  * outrank the item whose title is the query. Pi's fuzzyMatch scores word boundaries,
  * consecutive runs and exact equality, which the old four-level check could not.
  */
-const FIELD_TIER = { title: 0, alias: 1.5, tags: 3, value: 6, category: 9 } as const;
+const FIELD_TIER = { title: 0, alias: 1.5, tags: 3, description: 4.5, value: 6, category: 9 } as const;
 const QUALITY_MAX = 200;
 
 function fieldQuality(text: string, token: string, literalForShort = false) {
@@ -244,14 +244,14 @@ function fieldQuality(text: string, token: string, literalForShort = false) {
   return Math.max(-1, Math.min(1, match.score / QUALITY_MAX));
 }
 
-export function score(row: Pick<Row, "category" | "title" | "value" | "tags" | "aliases">, query: Query) {
+export function score(row: Pick<Row, "category" | "title" | "value" | "tags" | "aliases" | "description">, query: Query) {
   if (query.category && fuzzy(row.category, query.category) === Infinity) return Infinity;
   const tags = normTags(row.tags);
   const aliases = (row.aliases ?? []).map((alias) => alias.trim()).filter(Boolean);
   if (query.tags.some((tag) => !tags.includes(tag))) return Infinity;
   // Operators are per field: a suffix must not be defeated by the field that happens to
   // be concatenated after it.
-  const fields = [row.title ?? "", aliases.join(" "), tags.join(" "), row.value ?? "", row.category ?? ""].map((field) => field.toLowerCase());
+  const fields = [row.title ?? "", aliases.join(" "), tags.join(" "), row.description ?? "", row.value ?? "", row.category ?? ""].map((field) => field.toLowerCase());
   const termFound = (term: string) => fields.some((field) => termHit(field, term));
   if (query.not.some((term) => termFound(term))) return Infinity;
   if (query.exact.some((term) => !termFound(term))) return Infinity;
@@ -272,6 +272,7 @@ export function score(row: Pick<Row, "category" | "title" | "value" | "tags" | "
       fieldQuality(row.title, token) + FIELD_TIER.title,
       fieldQuality(aliases.join(" "), token) + FIELD_TIER.alias,
       fieldQuality(tags.join(" "), token) + FIELD_TIER.tags,
+      fieldQuality(row.description ?? "", token) + FIELD_TIER.description,
       fieldQuality(row.value, token, true) + FIELD_TIER.value,
       fieldQuality(row.category, token) + FIELD_TIER.category,
     );
@@ -366,6 +367,7 @@ export function label(row: Row) {
     templateSlots(row.value).length ? " ·tpl" : "",
     lines > 1 ? ` ·${lines}行` : "",
     row.placement === "prepend" ? " ·前" : row.placement === "append" ? " ·后" : "",
+    row.description ? ` ·${clip(oneLine(row.description), 28)}` : "",
   ].join("");
   const head = `@${row.category ?? ""}  ${clip(oneLine(row.title), LABEL_TITLE_MAX)}${tags}${marks}  →  `;
   // Give the value whatever room is left, then clip the whole line so a long category or

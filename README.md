@@ -165,6 +165,10 @@ TUI 里 `/shelf` 和 `ctrl+shift+k` 打开单屏选择器：顶部输入框实�
 
 普通条目插入时不改一个字节：`awk '{print $1}'`、`for f in "$@"; do …; done` 这类命令里的 `$1`、`$@` 原样保留。只有类别是 `Prompt`、来自 `prompts/` 文件、或含 `{{变量}}` 的模板才按下面的规则展开。写文件前如果 `store.json` / `config.json` / `.pi/shelf.json` 不是有效 JSON，会拒绝覆盖并提示，而不是当成空架子重建；`/shelf doctor` 会把问题列出来。
 
+提示词存储有两种形式：`$PI_CODING_AGENT_DIR/prompts/*.md`（或项目 `.pi/prompts/*.md`）是 Pi 原生提示词文件，pi-shelf 只读取、不写入；类别为 `Prompt` 的架子条目存在 `store.json` / `.pi/shelf.json`，用 `/shelf prompt add`（或 `/shelf add` 后选 Prompt）创建。两者都会出现在 `/shelf prompt`、`/shelf` 和输入框补全里。
+
+提示词可以带描述：Pi 提示词文件写在 frontmatter 的 `description:`；架子里的 Prompt 条目在新增时会多问一句“描述”，也可以 `/shelf edit` 修改。描述会出现在选择/补全的说明行，并参与模糊搜索。
+
 提示词模板是普通条目，类别用 `Prompt`。`{{name}}` 展开时输入，`{{name:甲|乙}}` 展开时选择，`{{name=默认}}` 带默认值。同名变量只问一次。另外认 Pi 自带的 `$1`、`${1:-默认}`、`$@`。`/shelf prompt review security` 会把 `security` 填进 `$1`，带引号的一整段算一个参数。没有默认值的 `$1` 和 `{{名字}}` 才弹出来填。`~/.pi/agent/prompts/*.md` 和项目 `.pi/prompts/*.md` 会出现在选择和补全里，不写进收藏；要留下用 `/shelf pin`。项目 `.pi/prompts` 只在 Pi 信任当前仓库时读取。
 
 用自然语言让 agent 写模板时，它会调 `add` 并等确认。要从当前对话和这个项目的过往对话总结，它先调 `prompt_context`，再把变化的部分收成变量。

@@ -638,7 +638,8 @@ async function promptFileRows(cwd: string, trusted: boolean): Promise<Row[]> {
         category: "Prompt",
         title,
         value: parsed.body.trim(),
-        tags: ["pi-prompt", parsed.description, parsed.argumentHint].filter(Boolean),
+        tags: ["pi-prompt", parsed.argumentHint].filter(Boolean) as string[],
+        description: parsed.description,
         source: "manual",
         uses: 0,
         created: "",
@@ -1156,9 +1157,12 @@ async function addFlow(ctx: ShelfCtx, presetCategory = "") {
     : await ctx.ui.input(category.toLowerCase() === "prompt" ? "模板。变量写成 {{name}} 或 {{name:甲|乙}}" : "插入内容（URL / 命令 / 笔记）");
   if (!value) return;
   const tags = await ctx.ui.input("标签，空格分隔");
+  const description = category.toLowerCase() === "prompt"
+    ? (await ctx.ui.input("描述（选择时显示，可空）")) ?? undefined
+    : undefined;
   const scope = await askScope(ctx, layer, "存到哪里");
   if (!scope) return;
-  const item = await upsert(layer, { category, title, value, tags: (tags ?? "").split(/[\s,]+/), source: "manual" }, scope, ctx);
+  const item = await upsert(layer, { category, title, value, tags: (tags ?? "").split(/[\s,]+/), description, source: "manual" }, scope, ctx);
   ctx.ui.notify(`已保存到${scope === "project" ? "仓库" : "全局"} @${item.category} ${item.title}`, "info");
 }
 
@@ -1170,11 +1174,13 @@ async function editItem(ctx: ShelfCtx, layer: ShelfLayer, item: ScopedItem) {
   const value = await askText(ctx, "插入内容", stored.value);
   const tags = await askText(ctx, "标签", stored.tags.join(" "));
   const category = await askText(ctx, "类别", stored.category);
+  const description = await askText(ctx, "描述（选择时显示）", stored.description ?? "");
   if (!title || !value || !category) return;
   stored.title = title;
   stored.value = value;
   stored.category = category;
   stored.tags = normTags((tags ?? "").split(/[\s,]+/));
+  stored.description = description?.trim() || undefined;
   stored.updated = now();
   await saveScope(layer, item.scope);
   ctx.ui.notify(`已更新 ${stored.title}`, "info");
@@ -2850,6 +2856,7 @@ export default function (pi: ExtensionAPI) {
       title: Type.Optional(Type.String()),
       value: Type.Optional(Type.String()),
       tags: Type.Optional(Type.Array(Type.String())),
+      description: Type.Optional(Type.String({ description: "Human description shown in pickers and completion." })),
       id: Type.Optional(Type.String()),
       scope: Type.Optional(Type.String({ description: "global or project. Harvest always writes global." })),
     }),
@@ -2861,7 +2868,7 @@ export default function (pi: ExtensionAPI) {
         const matched = (await rows(shelf, layer, shelf.cwd ?? process.cwd()))
           .filter((row) => score(row, query) !== Infinity)
           .slice(0, 20)
-          .map((row) => ({ id: row.id, category: row.category, title: row.title, value: row.value, tags: row.tags, dynamic: !!row.dynamic, scope: row.scope ?? "" }));
+          .map((row) => ({ id: row.id, category: row.category, title: row.title, value: row.value, tags: row.tags, description: row.description ?? "", dynamic: !!row.dynamic, scope: row.scope ?? "" }));
         return { content: [{ type: "text", text: JSON.stringify(matched, null, 2) }], details: { matched } };
       }
       if (params.action === "harvest" || params.action === "harvest_github") {
@@ -2900,7 +2907,7 @@ export default function (pi: ExtensionAPI) {
         if (scope === "project" && (!layer.root || layer.remoteBlocked)) {
           return { content: [{ type: "text", text: "当前目录没有可写的仓库架子。" }], details: {} };
         }
-        const item = await upsert(layer, { category: params.category, title: params.title, value: params.value, tags: params.tags, source: "agent" }, scope, shelf);
+        const item = await upsert(layer, { category: params.category, title: params.title, value: params.value, tags: params.tags, description: params.description, source: "agent" }, scope, shelf);
         return { content: [{ type: "text", text: `已保存 ${item.id}` }], details: { item } };
       }
       if (params.action === "delete") {

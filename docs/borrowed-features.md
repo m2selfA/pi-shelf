@@ -1,7 +1,8 @@
 # pi-shelf：同类项目调研与借鉴设计
 
 日期：2026-11-15
-范围：pi-shelf（`E:/inter/Documents/Repos/pi-shelf`），Pi 1.2.0 扩展
+性质：历史调研与落地记录；下文的“现状”、文件行号和测试数均指当时的版本。当前用法以 [README](../README.md) 为准，模型补全见 [输入框补全说明](provider-model-completion.md)。
+范围：当时的 pi-shelf 与 Pi 1.2.0 扩展
 证据分级：static-confirmed（源码/类型定义）、locally-verified（本机运行测试与探针）、web-confirmed（官方文档/仓库 README）、live-blocked（未注入真实 TUI 按键）
 
 ## 1. 结论

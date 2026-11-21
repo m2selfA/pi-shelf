@@ -20,13 +20,16 @@ pi --extension ./index.ts
 npm install        # typescript、@types/node、typebox、pi-coding-agent、pi-tui
 npm test           # 单元测试
 npm run typecheck  # tsc --noEmit，strict + noUncheckedIndexedAccess
+npm run test:models # 真实 Editor 中的模型/强度联动与标签补全
 ```
+
+模型补全的宿主版本验证与可复现命令见 [验证说明](docs/model-completion-verification.md)。
 
 已有 Pi 会话安装或更新后，执行 `/reload`，或重启 Pi，扩展才会进入当前会话。
 
 打包约定：Pi 宿主自己提供的包（`@earendil-works/pi-coding-agent`、`@earendil-works/pi-tui`、`typebox` 等）只能写在 `peerDependencies` 里、范围用 `"*"`，不能写进 `dependencies`。写进 `dependencies` 会被扩展加载器判定为重复运行时模块，启动时打印 `Host-provided extension packages must be declared in peerDependencies` 警告，并且可能在安装树里生成一份和宿主版本不一致的副本。本地开发用的具体版本放在 `devDependencies`。
 
-输入框补全只显示已经保存的收藏和提示词文件，不会因为安装插件自动生成条目；先用 `/shelf add` 保存一条，再输入标题的至少两个字符并按 Tab 或 `alt+/`。
+收藏与提示词补全来自已保存条目；先用 `/shelf add` 保存，再输入标题的至少两个字符并按 Tab 或 `alt+/`。模型与 provider 候选直接来自 Pi 运行中的模型注册表，不需要保存为收藏。
 
 | 文件 | 内容 |
 | --- | --- |
@@ -78,7 +81,8 @@ npm run typecheck  # tsc --noEmit，strict + noUncheckedIndexedAccess
 - 收藏候选排在 Pi 自己的候选前面，不会顶掉它们：`@` 是 Pi 的文件附件前缀，Tab 也是 Pi 的强制文件补全，所以同一截文本里 Pi 的文件/目录候选会接在 Shelf 候选之后一起显示。路径仍走原来的补全。
 - 多行收藏值（例如多行提示词模板）插入时按行拆开，光标落在最后一行末尾，编辑器行号、光标上下移动和渲染都保持正常。选择器里每行只占一行：值里的换行折成空格、超长部分截断并加 `…`，多行值另外标 `·4行` 这类行数，长值不会把列表撑开。
 - `/shelf` 后按 Tab 可补全动作；`/shelf harvest ` 可补全内置/自定义 topic；`/shelf prompt ` 可补全已发现的提示词名称。
-- 行首的其它 slash command（例如 `/remove-dir pi-fabric`）不会触发 Shelf 候选；参数补全交回 Pi 原生 provider。`/shelf` 和 `/add-dir <路径>` 仍由 pi-shelf 提供情景化补全。
+- 模型与 provider 也能补全：正文中的 `gpt` 按 Tab 查询完整 `provider/modelId`；`:model:`、`:provider:`、`:id:` 是明确入口，分别插入完整模型标识、provider 名、裸模型 ID。模型导航行以 `:…` 显示，接受后再按 Tab 选择思考强度。`--model=` / `--provider=` 参数支持相同的候选。
+- pi-subagents 的 `/run` 支持 provider → model → thinking 联动选择，见下节。其它 slash 参数只有明确模型标记、模型 flag 或主动 Tab 的较强模型匹配才加入模型候选；`/model`、`/login`、`/remove-dir` 保留原生参数语义，`/shelf` 和 `/add-dir` 保留已有专用补全。原生命令候选保留自己的替换范围。
 - 远程路径用系统 `ssh`。主机要在 `~/.ssh/config` 或 `known_hosts` 里。输入 `cap00:/data/` 或 `user@cap00:rel`，下拉出现在输入框，Tab 或回车写入。目录保留末尾的 `/`，可以继续下一层。连接用 `BatchMode`，不会在输入框里问密码。`主机:数字`（如 `localhost:8080`）按端口处理，不会去连 ssh；确实要补全数字目录时按 Tab。列目录结果缓存 10 秒，失败缓存 20 秒，避免每敲一个字都重连。
 
 筛选是 AND：`@GitHub #cryo-em relion` 表示类别模糊匹配 GitHub、必须带 `cryo-em`、再模糊匹配 `relion`。多个词要求每个词都命中。还认 fzf 的写法：`'精确`、`^开头`、`结尾$`、`!排除`；`@类` 和 `#标签` 优先于这些符号，所以 `#!x` 仍是一个标签。排序先看字段（标题 > 标签 > 正文 > 类别），同一层里用 Pi 自带的 `fuzzyMatch` 算词边界、连续匹配和完全相等，再按 frecency（使用次数 × 30 天衰减）和上次使用时间打破平局。选中后调用 `pasteToEditor`。
@@ -86,6 +90,38 @@ npm run typecheck  # tsc --noEmit，strict + noUncheckedIndexedAccess
 TUI 里 `/shelf` 和 `ctrl+shift+k` 打开单屏选择器：顶部输入框实时过滤，左边结果，右边完整条目（全文、标签、来源、变量名、使用次数）。`↑/↓` 选择、`Enter` 插入、`Esc` 取消；终端窄于 76 列时只显示列表。RPC 或没有自定义 UI 的环境自动退回原来的两段式对话框。
 
 `Tab` 可以标记多条，`Enter` 把它们按 `placement`（`prepend` / `append`）和 `order` 排好，中间空一行拼起来，先在编辑器里给一份可改的组合预览，再插入。没有 `order` 的条目按 0 排。
+
+### 自然语言中的模型标签
+
+像 `&` 选择 MCP 一样，可以用 **`^` 选择模型**。输入 `^`、`^gpt` 或 `^sub2api/`，候选会自动出现；选择 provider 的 `/` 行、模型的 `:…` 行，再按 Tab 选择强度。也可以直接选择不指定强度的完整模型行，或最近使用过的完整组合。
+
+最终文字可以这样写（模型名以你实际候选为准）：
+
+```text
+请让 reviewer 使用 ^sub2api/gpt-6-astra:high 检查错误处理，再让 worker 使用 ^智谱/glm-example 完成修改。
+```
+
+`^provider/modelId` 精确标识模型，`:high` 是可选强度；标签在最终提示词中保留。模型 ID 自身的 `/`、`:free`、`:latest` 不会被误拆。标签是可搜索和复制的普通文字，当前没有增加 MCP 那种独立富文本组件，也不会仅因出现标签就切换主会话模型或自动调度子代理。
+
+原有 `&` MCP 候选和触发字符保持传递。数学表达式 `x^2` 不会触发模型标签。
+
+### 子代理模型与思考强度补全
+
+更新后执行 `/reload`，然后在输入框操作：
+
+1. 输入 `/run rev`，按 Tab，选择 `reviewer · 配置本次模型`，得到 `/run reviewer[model=`。
+2. 按 Tab，选择 provider 的浏览行，例如 `sub2api/`。
+3. 再按 Tab，选择模型的 `:…` 行，进入强度选择；也可继续输入模型名过滤。
+4. 再按 Tab，选择 `high` 等可选强度，得到 `/run reviewer[model=provider/modelId:high] `。
+5. 继续输入任务，正常提交。选择过程中不会自动发送或启动子代理。
+
+也可以直接输入 `/run reviewer[model=` 后按 Tab，或者在普通文本中输入 `:model:`。不想指定强度时，选择不带 `:…` 的模型行；这表示沿用角色有效默认，不等于 `off`。明确关闭请选 `:off`。最近接受过的完整模型与强度组合会出现在明确模型入口，统计复用本地 `completions.json`，与工具频率隔离。
+
+候选使用精确 provider/model ID，保留中文 provider、`@`、模型 ID 中的 `/`、`:free`、`:latest`。思考强度按注册表的 `reasoning` / `thinkingLevelMap` 筛选：不支持推理的模型只列 `off`；没有显式映射时不列 `xhigh` / `max`，不会在补全时偷偷降级。插入会保留已有 `,output=…`、闭括号和后面的任务文本。
+
+Shelf 通过已安装 pi-subagents 的只读事件桥识别角色和 runner，不启动子代理、不修改角色默认值。外部 CLI / external-job 角色保留原生 agent 补全，不提供 Pi provider/model 导航。该公开查询不包含完整 modelScope / maxThinking，候选会标明「角色限制启动时校验」；最终是否允许启动由 pi-subagents 检查。事件桥不可用时不会把限制未知标为无限制。
+
+更多边界与验证见 [模型补全](docs/provider-model-completion.md) 和 [子代理联动补全](docs/subagent-model-completion.md)。
 
 ### 仓库与链接引用
 

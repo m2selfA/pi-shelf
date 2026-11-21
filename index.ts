@@ -42,6 +42,9 @@ import { completionScores, emptyCompletionStats, parseCompletionStats, recordCom
 import { ALIAS_MACROS, aliasKeyValid, expandAlias, matchAliases, type AliasScript } from "./src/alias.ts";
 import { captureScreenshot, readClipboardImage, saveTempImage } from "./src/image.ts";
 import { parseTarget, rankTargets } from "./src/target.ts";
+import { createModelCompletionProvider } from "./src/model-completion.ts";
+import { createSubagentContextClient } from "./src/subagent-context.ts";
+import type { ModelLike } from "./src/models.ts";
 import { checkUrl, enrichUrl } from "./src/enrich.ts";
 import {
   applyRemoteCompletion,
@@ -2500,11 +2503,31 @@ function installAutocomplete(pi: ExtensionAPI) {
     ui.onTerminalInput?.((data) => {
       if (isAltSlash(data)) return { data: "\t" };
     });
-    ui.addAutocompleteProvider?.((current) => ({
+    const roleClient = createSubagentContextClient(pi.events, () => ctx);
+    pi.on("session_shutdown", async () => { roleClient.dispose(); });
+    const getRunCommands = () => {
+      if (typeof pi.getCommands !== "function") return [];
+      return pi.getCommands().filter((command) => {
+        const source = command.sourceInfo?.source ?? "";
+        return command.source === "extension" && /^run(?::\d+)?$/.test(command.name) && /^npm:pi-subagents(?:@[^/]+)?$/.test(source);
+      }).map((command) => command.name);
+    };
+    ui.addAutocompleteProvider?.((current) => createModelCompletionProvider({
+      getModels: () => (ctx.modelRegistry?.getAvailable?.() ?? []) as ModelLike[],
+      getRunCommands,
+      getPreferredProvider: () => ctx.model?.provider,
+      getAgent: (agent, signal) => roleClient.get(agent, `${ctx.cwd}\n${ctx.model?.provider ?? ""}`, signal),
+      scores: (group) => completionScores(completionStats, `model-spec:${group}`),
+      accepted: (group, value) => {
+        recordCompletion(completionStats, `model-spec:${group}`, value);
+        scheduleCompletionSave();
+      },
+      notify: (message) => ctx.ui.notify(message, "warning"),
+      current: {
       // "_" is a natural trigger for tool names (web_, mcp__github__), so the list can
       // open without Tab. "-" is deliberately not a trigger: it matches "_" but only
       // completes on Tab/alt+/.
-      triggerCharacters: [":", "@", "#", "_"],
+      triggerCharacters: [...new Set([...(current.triggerCharacters ?? []), ":", "@", "#", "_"])],
       async getSuggestions(lines, cursorLine, cursorCol, options) {
         const before = (lines[cursorLine] ?? "").slice(0, cursorCol);
         const interception = shelfInterceptionContext(before, options.force === true);
@@ -2627,9 +2650,9 @@ function installAutocomplete(pi: ExtensionAPI) {
         const marked = item as CompletionMeta & { shelfKind?: string };
         // A tool name replaces the typed fragment and adds one space, the same rule the
         // shelf/remote insertions use.
-        if (marked.shelfKind === "script" && item.script) {
+        if (marked.shelfKind === "script" && marked.script) {
           try {
-            const output = runAliasScriptSync(item.script, completionCtx?.cwd ?? process.cwd());
+            const output = runAliasScriptSync(marked.script, completionCtx?.cwd ?? process.cwd());
             if (!output.trim()) {
               completionCtx?.ui.notify("脚本没有输出，未插入。", "warning");
               return { lines, cursorLine, cursorCol };
@@ -2645,7 +2668,7 @@ function installAutocomplete(pi: ExtensionAPI) {
         if (marked.shelfKind === "alias") {
           recordCompletion(completionStats, prefix, item.value);
           scheduleCompletionSave();
-          return applyRemoteCompletion(lines, cursorLine, cursorCol, item.value, prefix, false, item.cursorOffset);
+          return applyRemoteCompletion(lines, cursorLine, cursorCol, item.value, prefix, false, marked.cursorOffset);
         }
         if (marked.shelfKind === "tool" || marked.shelfKind === "package") {
           recordCompletion(completionStats, prefix, item.value);
@@ -2678,6 +2701,7 @@ function installAutocomplete(pi: ExtensionAPI) {
         if (token && hostAllowed(token.destination, known)) return true;
         if (!pathToken(before)) return true;
         return current.shouldTriggerFileCompletion?.(lines, cursorLine, cursorCol) ?? true;
+      },
       },
     }));
   });
